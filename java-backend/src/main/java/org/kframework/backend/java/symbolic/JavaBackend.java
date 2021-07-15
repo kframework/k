@@ -128,7 +128,7 @@ public class JavaBackend extends AbstractBackend {
                   return ModuleTransformer.fromSentenceTransformer((mod, s) -> new ExpandMacros(transformer, mod, files, kem, kompileOptions, false).expand(s), "expand macros").apply(m2);
                 })
                 .andThen(AddImplicitComputationCell::transformModule)
-                .andThen(ConcretizeCells::transformModule)
+                .andThen(d -> ConcretizeCells.transformModule(d, false))
                 .andThen(ModuleTransformer.fromRuleBodyTransformer(RewriteToTop::bubbleRewriteToTopInsideCells, "bubble out rewrites below cells"))
                 //.andThen(ModuleTransformer.fromSentenceTransformer(new NormalizeAssoc(KORE.c()), "normalize assoc"))
 

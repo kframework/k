@@ -118,8 +118,7 @@ public class ModuleToKORE {
     private static final boolean METAVAR = false;
 
     public void convert(boolean heatCoolEq, String prelude, StringBuilder semantics, StringBuilder syntax, StringBuilder macros) {
-        ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(module);
-        Sort topCellSort = configInfo.getRootCell();
+        Sort topCellSort = Sorts.GeneratedTopCell();
         String topCellSortStr = getSortStr(topCellSort);
         semantics.append("[topCellInitializer{}(");
         convert(topCellInitializer, semantics);
@@ -844,8 +843,7 @@ public class ModuleToKORE {
     public String convertSpecificationModule(Module definition, Module spec, SentenceType defaultSentenceType, StringBuilder sb) {
         SentenceType sentenceType = getSentenceType(spec.att()).orElse(defaultSentenceType);
         sb.setLength(0); // reset string writer
-        ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(definition);
-        Sort topCellSort = configInfo.getRootCell();
+        Sort topCellSort = Sorts.GeneratedTopCell();
         String topCellSortStr = getSortStr(topCellSort);
         HashMap<String, Boolean> considerSource = new HashMap<>();
         considerSource.put(Att.SOURCE(), true);

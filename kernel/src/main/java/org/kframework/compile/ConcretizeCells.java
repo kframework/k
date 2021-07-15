@@ -34,33 +34,33 @@ public class ConcretizeCells {
     final SortCells sortCells;
     private final AddTopCellToRules addRootCell;
 
-    public static Definition transformDefinition(Definition input) {
+    public static Definition transformDefinition(Definition input, boolean kore) {
         ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(input.mainModule());
         LabelInfo labelInfo = new LabelInfoFromModule(input.mainModule());
         SortInfo sortInfo = SortInfo.fromModule(input.mainModule());
         return DefinitionTransformer.fromSentenceTransformer(
-                new ConcretizeCells(configInfo, labelInfo, sortInfo, input.mainModule())::concretize,
+                new ConcretizeCells(configInfo, labelInfo, sortInfo, input.mainModule(), kore)::concretize,
                 "concretizing configuration"
         ).apply(input);
     }
 
 
-    public static Module transformModule(Module mod) {
+    public static Module transformModule(Module mod, boolean kore) {
         ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(mod);
         LabelInfo labelInfo = new LabelInfoFromModule(mod);
         SortInfo sortInfo = SortInfo.fromModule(mod);
         return ModuleTransformer.fromSentenceTransformer(
-                new ConcretizeCells(configInfo, labelInfo, sortInfo, mod)::concretize,
+                new ConcretizeCells(configInfo, labelInfo, sortInfo, mod, kore)::concretize,
                 "concretizing configuration").apply(mod);
     }
 
 
-    public ConcretizeCells(ConfigurationInfo configurationInfo, LabelInfo labelInfo, SortInfo sortInfo, Module module) {
+    public ConcretizeCells(ConfigurationInfo configurationInfo, LabelInfo labelInfo, SortInfo sortInfo, Module module, boolean kore) {
         this.configurationInfo = configurationInfo;
         this.labelInfo = labelInfo;
         this.sortInfo = sortInfo;
         this.module = module;
-        addRootCell = new AddTopCellToRules(configurationInfo, labelInfo);
+        addRootCell = new AddTopCellToRules(configurationInfo, labelInfo, kore);
         addParentCells = new AddParentCells(configurationInfo, labelInfo);
         closeCells = new CloseCells(configurationInfo, sortInfo, labelInfo);
         sortCells = new SortCells(configurationInfo, labelInfo, module);

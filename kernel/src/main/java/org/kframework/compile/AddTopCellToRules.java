@@ -2,6 +2,7 @@
 package org.kframework.compile;
 
 import org.kframework.attributes.Att;
+import org.kframework.builtin.KLabels;
 import org.kframework.backend.kore.ConstructorChecks;
 import org.kframework.definition.Context;
 import org.kframework.definition.Module;
@@ -34,10 +35,12 @@ public class AddTopCellToRules {
 
     private final ConfigurationInfo cfg;
     private final LabelInfo labelInfo;
+    private final boolean kore;
 
-    public AddTopCellToRules(ConfigurationInfo cfg, LabelInfo labelInfo) {
+    public AddTopCellToRules(ConfigurationInfo cfg, LabelInfo labelInfo, boolean kore) {
         this.cfg = cfg;
         this.labelInfo = labelInfo;
+        this.kore = kore;
     }
 
     public K addImplicitCells(K term, Module m) {
@@ -46,7 +49,12 @@ public class AddTopCellToRules {
     }
 
     protected K addRootCell(K term) {
-        KLabel root = cfg.getCellLabel(cfg.getRootCell());
+        KLabel root;
+        if (kore) {
+            root = KLabels.GENERATED_TOP_CELL;
+        } else {
+            root = cfg.getCellLabel(cfg.getRootCell());
+        }
 
         // KApply instance
         if (term instanceof KApply) {

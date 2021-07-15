@@ -127,4 +127,7 @@ public class KompileOptions implements Serializable {
     public List<String> transition = Collections.singletonList(DEFAULT_TRANSITION);
 
     public static final String DEFAULT_TRANSITION = "transition";
+
+    @Parameter(names="--top-cell", description="Choose the top configuration cell when more than one is provided. Does nothing if only one top cell exists.")
+    public String topCell;
 }

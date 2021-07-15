@@ -23,6 +23,7 @@ import org.kframework.kore.TransformK;
 import org.kframework.kore.VisitK;
 import org.kframework.parser.inner.ParseInModule;
 import org.kframework.parser.inner.generator.RuleGrammarGenerator;
+import org.kframework.parser.outer.Outer;
 import org.kframework.utils.StringUtil;
 import org.kframework.utils.errorsystem.KEMException;
 import scala.collection.Set;
@@ -47,6 +48,7 @@ public class ResolveFreshConstants {
     private Module m;
     private java.util.Set<KVariable> freshVars = new HashSet<>();
     private Map<KVariable, Integer> offsets = new HashMap<>();
+    private final String manualTopCell;
 
     private void reset() {
         freshVars.clear();
@@ -221,9 +223,10 @@ public class ResolveFreshConstants {
         return s;
     }
 
-    public ResolveFreshConstants(Definition def, boolean kore) {
+    public ResolveFreshConstants(Definition def, boolean kore, String manualTopCell) {
         this.def = def;
         this.kore = kore;
+        this.manualTopCell = manualTopCell;
     }
 
     public Module resolve(Module m) {
@@ -241,7 +244,16 @@ public class ResolveFreshConstants {
                 RuleGrammarGenerator gen = new RuleGrammarGenerator(def);
                 ParseInModule mod = RuleGrammarGenerator.getCombinedGrammar(gen.getConfigGrammar(m), true);
                 ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(m);
-                Sort topCellSort = configInfo.getRootCell();
+                Sort topCellSort;
+                try {
+                    topCellSort = configInfo.getRootCell();
+                } catch (KEMException e) {
+                    if (manualTopCell != null) {
+                        topCellSort = Outer.parseSort(manualTopCell);
+                    } else {
+                      throw e;
+                    }
+                }
                 KLabel topCellLabel = configInfo.getCellLabel(topCellSort);
                 Production prod = m.productionsFor().apply(topCellLabel).head();
                 KToken cellName = KToken(prod.att().get("cellName"), Sort("#CellName"));
