@@ -33,7 +33,7 @@ The rest of this file assumes you intend to build and install the K Framework
 from source.
 
 Note that the K Framework can only be built on (x86-64) Linux-like systems,
-e.g., this also includies macOS/brew (x86-64) as well as the Windows Subsystem
+e.g., this also includes macOS/brew (x86-64) as well as the Windows Subsystem
 for Linux.
 All 32-bit systems are **not supported**.
 See the
@@ -185,6 +185,8 @@ This performs first-time setup of the OCaml backend. You may optionally set
 should be installed.
 
 ## Building with Nix
+
+By default, Nix will build the project and its transitive dependencies from source, which can take up to an hour. We recommend setting up the binary cache at [kore.cachix.org] to speed up the build process significantly.
 
 To build the K Framework itself, run:
 
