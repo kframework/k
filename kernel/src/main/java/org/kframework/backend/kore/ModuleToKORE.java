@@ -1041,9 +1041,9 @@ public class ModuleToKORE {
                     sb.append(')');
                 }
 
-                sb.append("\n    )),\n    \\and{R} (\n      \\equals{");
+                sb.append("\n    )),\n    \\equals{");
                 sb.append(ruleInfo.productionSortStr);
-                sb.append(",R} (\n        ");
+                sb.append(",R} (\n      ");
                 convert(ruleInfo.productionLabel, sb);
                 sb.append("(");
                 String conn = "";
@@ -1054,25 +1054,25 @@ public class ModuleToKORE {
                     conn = ",";
                 }
                 sb.append(")");
-                sb.append(",\n        ");
+                sb.append(",\n      \\and{R} (\n        ");
                 convert(right, sb);
-                sb.append("),\n      ");
+                sb.append(",\n        ");
                 convertSideCondition(ensures, sb);
-                sb.append("))\n  ");
+                sb.append(")))\n  ");
                 convert(consideredAttributes, rule.att(), sb, freeVarsMap, rule);
                 sb.append("\n\n");
             } else if (rule.att().contains(Att.SIMPLIFICATION())) {
                 sb.append("\\implies{R} (\n    ");
                 convertSideCondition(requires, sb);
-                sb.append(",\n    \\and{R} (\n      \\equals{");
+                sb.append(",\n    \\equals{");
                 sb.append(ruleInfo.productionSortStr);
-                sb.append(",R} (\n        ");
+                sb.append(",R} (\n      ");
                 convert(left, sb);
-                sb.append(",\n        ");
+                sb.append(",\n      \\and{R} (\n        ");
                 convert(right, sb);
-                sb.append("),\n      ");
+                sb.append(",\n        ");
                 convertSideCondition(ensures, sb);
-                sb.append("))\n  ");
+                sb.append(")))\n  ");
                 convert(consideredAttributes, rule.att(), sb, freeVarsMap, rule);
                 sb.append("\n\n");
 
@@ -1100,9 +1100,9 @@ public class ModuleToKORE {
                 for (int childIdx = 0; childIdx < ruleInfo.leftChildren.size(); childIdx++) {
                     sb.append(')');
                 }
-                sb.append("),\n    \\and{R} (\n      \\equals{");
+                sb.append("),\n    \\equals{");
                 sb.append(ruleInfo.productionSortStr);
-                sb.append(",R} (\n        ");
+                sb.append(",R} (\n      ");
                 convert(ruleInfo.productionLabel, sb);
                 sb.append("(");
                 String conn = "";
@@ -1113,11 +1113,11 @@ public class ModuleToKORE {
                     conn = ",";
                 }
                 sb.append(")");
-                sb.append(",\n        ");
+                sb.append(",\n      \\and{R} (\n        ");
                 convert(right, sb);
-                sb.append("),\n      ");
+                sb.append(",\n        ");
                 convertSideCondition(ensures, sb);
-                sb.append("))\n  ");
+                sb.append(")))\n  ");
                 convert(consideredAttributes, rule.att(), sb, freeVarsMap, rule);
                 sb.append("\n\n");
             }
