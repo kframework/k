@@ -385,6 +385,25 @@ public class Kompile {
         return mt.apply(specModule);
     }
 
+    // Extra checks just for the prover specification.
+    public void proverChecksX(Module specModule, Module mainDefModule) {
+        // check rogue syntax in spec module
+        Set<Sentence> toCheck = mutable(specModule.sentences().$minus$minus(mainDefModule.sentences()));
+        for (Sentence s : toCheck)
+            if (s.isSyntax() && (!s.att().contains(Att.TOKEN()) || !mainDefModule.allSorts().contains(((Production) s).sort())))
+                errors.add(KEMException.compilerError("Found syntax declaration in proof module. Only tokens for existing sorts are allowed.", s));
+
+        ModuleTransformer mt = ModuleTransformer.fromSentenceTransformer((m, s) -> {
+            if (m.name().equals(mainDefModule.name()) || mainDefModule.importedModuleNames().contains(m.name()))
+                return s;
+            if (!(s instanceof Claim || s instanceof Production)) {
+                errors.add(KEMException.compilerError("Use claim instead of rule to specify proof objectives.", s));
+            }
+            return s;
+        }, "rules in spec module");
+        mt.apply(specModule);
+    }
+
     public void structuralChecks(scala.collection.Set<Module> modules, Module mainModule, Option<Module> kModule, Set<String> excludedModuleTags) {
         boolean isSymbolic = excludedModuleTags.contains(Att.CONCRETE());
         boolean isKast = excludedModuleTags.contains(Att.KORE());

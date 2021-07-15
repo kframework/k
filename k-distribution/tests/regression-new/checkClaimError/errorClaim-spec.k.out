@@ -1,0 +1,4 @@
+[Error] Compiler: Use claim instead of rule to specify proof objectives.
+	Source(errorClaim-spec.k)
+	Location(6,10,6,43)
+[Error] Compiler: Had 1 structural errors.

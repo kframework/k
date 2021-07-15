@@ -194,6 +194,15 @@ public class Main {
                         }
                     }
                     break;
+                case "-kprovex":
+                    modules.addAll(org.kframework.kprovex.KProveFrontEnd.getModules());
+                    for (KModule kModule : kModules) {
+                        List<Module> ms = kModule.getKProveModules();
+                        if (ms != null) {
+                            modules.addAll(ms);
+                        }
+                    }
+                    break;
                 case "-kbmc":
                     modules.addAll(KBMCFrontEnd.getModules());
                     for (KModule kModule : kModules) {

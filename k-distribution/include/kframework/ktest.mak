@@ -8,6 +8,7 @@ KRUN=$(abspath $(MAKEFILE_PATH)/../../bin/krun)
 KDEP=$(abspath $(MAKEFILE_PATH)/../../bin/kdep)
 # and kprove
 KPROVE=$(abspath $(MAKEFILE_PATH)/../../bin/kprove)
+KPROVEX=$(abspath $(MAKEFILE_PATH)/../../bin/kprovex)
 # and kbmc
 KBMC=$(abspath $(MAKEFILE_PATH)/../../bin/kbmc)
 # and kast
@@ -50,10 +51,13 @@ KPROVE_FLAGS+=--no-exc-wrap
 KRUN_FLAGS+=--no-exc-wrap
 
 KRUN_OR_LEGACY=$(KRUN)
+KPROVE_OR_X=$(KPROVE)
 
 CHECK?=| diff -
 REMOVE_PATHS=| sed 's!'`pwd`'/\(\./\)\{0,2\}!!g'
 CONSIDER_ERRORS=2>&1
+# null by default, add CONSIDER_PROVER_ERRORS=2>&1 to the local Makefile to test kprove output
+#CONSIDER_PROVER_ERRORS=
 
 .PHONY: kompile krun all clean update-results proofs bmc
 
@@ -103,16 +107,16 @@ endif
 
 %-spec.k %-spec.md: kompile
 ifeq ($(TESTDIR),$(RESULTDIR))
-	$(KPROVE) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CHECK) $@.out
+	$(KPROVE_OR_X) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CONSIDER_PROVER_ERRORS) $(REMOVE_PATHS) $(CHECK) $@.out
 else
-	$(KPROVE) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CHECK) $(RESULTDIR)/$(notdir $@).out
+	$(KPROVE_OR_X) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CONSIDER_PROVER_ERRORS) $(REMOVE_PATHS) $(CHECK) $(RESULTDIR)/$(notdir $@).out
 endif
 
 %-broken-spec.k %-broken-spec.md: kompile
 ifeq ($(TESTDIR),$(RESULTDIR))
-	$(KPROVE) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CONSIDER_ERRORS) $(REMOVE_PATHS) $(CHECK) $@.out
+	$(KPROVE_OR_X) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CONSIDER_ERRORS) $(REMOVE_PATHS) $(CHECK) $@.out
 else
-	$(KPROVE) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CONSIDER_ERRORS) $(REMOVE_PATHS) $(CHECK) $(RESULTDIR)/$(notdir $@).out
+	$(KPROVE_OR_X) $@ $(KPROVE_FLAGS) $(DEBUG) -d $(DEFDIR) $(CONSIDER_ERRORS) $(REMOVE_PATHS) $(CHECK) $(RESULTDIR)/$(notdir $@).out
 endif
 
 %-spec-bmc.k %-spec-bmc.md: kompile

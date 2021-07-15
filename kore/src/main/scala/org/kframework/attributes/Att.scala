@@ -111,6 +111,7 @@ object Att {
   val HEAT = "heat"
   val COOL = "cool"
   val TAG = "tag"
+  val TOKEN = "TOKEN"
   val USER_LIST = "userList"
   val GENERATED_BY_LIST_SUBSORTING = "generatedByListSubsorting"
   val TRANSITION = "transition"
