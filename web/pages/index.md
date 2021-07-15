@@ -24,7 +24,7 @@ call/cc.
 
 ## K Tool Download
 
-- The provided [K tool binaries](./downloads.md) are supported on Linux, OS X, and Windows. Other platforms may or may not work correctly. We welcome information about usability of unsupported platforms or bugs in the supported platforms.
+- The provided [K Tool Binaries](./downloads.md) are supported on Linux, OS X, and Windows. Other platforms may or may not work correctly. We welcome information about usability of unsupported platforms or bugs in the supported platforms.
 - Try our [Editor Support](./editor_support.md) page for links to K syntax highlighting definitions for various popular editors/IDEs. Please feel free to contribute.
 - The source code (Java) is available on [GitHub](https://github.com/kframework), where you can also [report bugs](http://github.com/kframework/k/issues)</a> (please do so).
 

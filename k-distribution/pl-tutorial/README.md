@@ -1,4 +1,4 @@
-# K Tutorial
+# K PL Tutorial
 
 Here you will learn how to use the K tool to define languages by means of a series of screencast movies. It is recommended to do these in the indicated order, because K features already discussed in a previous language definition will likely not be rediscussed in latter definitions. The screencasts follow quite closely the structure of the files under the [tutorial folder](https://github.com/kframework/k/tree/master/k-distribution/pl-tutorial) in the K tool distribution. If you'd rather follow the instructions there and do the tutorial exercises yourself, then go back to https://kframework.org and download the K tool, if you have not done it already. Or, you can first watch the screencasts below and then do the exercises, or do them in parallel.
 
