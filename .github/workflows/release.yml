@@ -87,7 +87,7 @@ jobs:
       - name: 'Publish K to k-framework-binary cache (private)'
         id: binary
         continue-on-error: true
-        uses: workflow/nix-shell-action@v3.3.2
+        uses: workflow/nix-shell-action@10ebd4e80eae8a5bc5147c0a36ebb568d1b277bd # v3.3.2
         env:
           CACHIX_AUTH_TOKEN: '${{ secrets.CACHIX_PRIVATE_KFB_TOKEN }}'
           GC_DONT_GC: '1'
@@ -97,7 +97,7 @@ jobs:
           packages: jq
           script: |
             # Install kup
-            export PATH="$(nix build github:runtimeverification/kup --no-link --json | jq -r '.[].outputs | to_entries[].value')/bin:$PATH"
+            export PATH="$(nix build github:runtimeverification/kup/063314a75a3af900dbab864f4d5845fba2206e64 --no-link --json | jq -r '.[].outputs | to_entries[].value')/bin:$PATH"
 
             # Publish all three package variants using kup publish
             # Using public macOS runner has proven reliable for large file uploads
@@ -111,7 +111,7 @@ jobs:
       - name: 'Build and cache K and K dependencies (public)'
         id: dependencies
         continue-on-error: true
-        uses: workflow/nix-shell-action@v3
+        uses: workflow/nix-shell-action@608eb20401e12c82b204e8e2c6a8b0eebfb5407c # v3
         env:
           GC_DONT_GC: 1
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_PUBLIC_TOKEN }}
@@ -384,7 +384,7 @@ jobs:
           make build
 
       - name: Publish pyk to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: pyk/dist
           user: __token__
