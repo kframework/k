@@ -122,7 +122,7 @@ class Proof(Generic[PS, SR]):
         """Check that the proof's representation on disk is up-to-date."""
         if self.proof_dir is None:
             raise ValueError(f'Cannot check if proof {self.id} with no proof_dir is up-to-date')
-        proof_path = self.proof_dir / f'{hash_str(id)}.json'
+        proof_path = self.proof_dir / f'{hash_str(self.id)}.json'
         if proof_path.exists() and proof_path.is_file():
             return self.digest == hash_file(proof_path)
         else:

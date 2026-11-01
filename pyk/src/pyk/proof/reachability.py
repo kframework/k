@@ -387,7 +387,7 @@ class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
         admitted = dct.get('admitted', False)
         subproof_ids = dct['subproof_ids'] if 'subproof_ids' in dct else []
         node_refutations: dict[int, str] = {}
-        if 'node_refutation' in dct:
+        if 'node_refutations' in dct:
             node_refutations = {
                 kcfg._resolve(int(node_id)): proof_id for node_id, proof_id in dct['node_refutations'].items()
             }

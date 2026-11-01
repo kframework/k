@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Final
 
 import pytest
@@ -14,7 +15,7 @@ from pyk.kast.prelude.ml import mlEquals, mlTop
 from pyk.kast.prelude.utils import token
 from pyk.kast.pretty import PrettyPrinter
 from pyk.kcfg import KCFG, KCFGShow
-from pyk.kcfg.kcfg import KCFGNodeAttr
+from pyk.kcfg.kcfg import KCFGNodeAttr, KCFGStore
 from pyk.kcfg.show import NodePrinter
 from pyk.utils import not_none, single
 
@@ -963,3 +964,18 @@ def test_create_split_by_nodes(source: CTerm, targets: Iterable[CTerm], expected
 
     # Then
     assert actual == expected
+
+
+def test_read_cfg_data_missing_vacuous_stuck(tmp_path: Path) -> None:
+    # Given
+    store = KCFGStore(tmp_path)
+    store.kcfg_json_path.write_text(json.dumps({'nodes': [1], 'edges': []}))
+    store.kcfg_node_path(1).write_text(json.dumps(node(1).to_dict()))
+
+    # When
+    dct = store.read_cfg_data()
+
+    # Then
+    assert 'vacuous' not in dct
+    assert 'stuck' not in dct
+    assert dct['nodes'] == [{'id': 1, 'cterm': node(1).to_dict()['cterm'], 'attrs': []}]

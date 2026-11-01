@@ -9,7 +9,7 @@ from pyk.kast.prelude.kint import intToken
 from pyk.kcfg.exploration import KCFGExplorationNodeAttr
 from pyk.kcfg.kcfg import KCFG, KCFGNodeAttr
 from pyk.proof import EqualityProof
-from pyk.proof.implies import EqualitySummary
+from pyk.proof.implies import EqualitySummary, RefutationProof
 from pyk.proof.proof import CompositeSummary, Proof, ProofStatus
 from pyk.proof.reachability import APRFailureInfo, APRProof, APRSummary
 
@@ -498,3 +498,42 @@ def test_apr_proof_summary_subproofs(proof_dir: Path) -> None:
             ),
         ]
     )
+
+
+def refutation_proof(i: int, proof_dir: Path) -> RefutationProof:
+    return RefutationProof(
+        id=f'refutation_proof_{i}', pre_constraints=[], last_constraint=intToken(i), proof_dir=proof_dir
+    )
+
+
+def test_write_proof_up_to_date(proof_dir: Path) -> None:
+    # Given
+    proof = equality_proof(1, proof_dir)
+
+    # Then
+    assert not proof.up_to_date
+
+    # When
+    proof.write_proof()
+
+    # Then
+    assert proof.up_to_date
+
+
+def test_apr_proof_from_dict_node_refutations(proof_dir: Path) -> None:
+    # Given
+    refutation = refutation_proof(1, proof_dir)
+    proof = apr_proof(1, proof_dir)
+
+    # When
+    refutation.write_proof_data()
+    proof.read_subproof_data(refutation.id)
+    proof.node_refutations[node(1).id] = refutation
+    proof.write_proof()
+    assert proof.proof_dir
+    proof_from_disk = Proof.read_proof(id=proof.id, proof_dir=proof_dir)
+    assert isinstance(proof_from_disk, APRProof)
+
+    # Then
+    assert proof.dict == proof_from_disk.dict
+    assert proof_from_disk.node_refutations
