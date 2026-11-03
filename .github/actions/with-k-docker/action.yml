@@ -4,27 +4,22 @@ inputs:
   container-name:
     description: 'Docker container name to use'
     required: true
-    type: string
   k-deb-path:
     description: 'Path to K .deb file'
     required: true
-    type: string
     default: kframework.deb
   install-backend-debs:
     description: 'Whether to install a separate package for the LLVM backend'
     required: true
-    type: boolean
-    default: true
+    default: 'true'
   distro:
     description: 'Distribution to setup Docker for.'
     required: true
-    type: string
     default: jammy
   run-container:
     description: 'Run the K container automatically with default settings.'
     required: true
-    type: boolean
-    default: true
+    default: 'true'
 runs:
   using: 'composite'
   steps:
@@ -32,58 +27,57 @@ runs:
     shell: bash {0}
     env:
       BASE_DISTRO: ${{ inputs.distro }}
-      GH_TOKEN: ${{ github.token }}
+      CONTAINER_NAME: ${{ inputs.container-name }}
+      DOCKERFILE: ${{ github.action_path }}/Dockerfile
       INSTALL_BACKEND_DEBS: ${{ inputs.install-backend-debs }}
+      K_DEB_PATH: ${{ inputs.k-deb-path }}
     run: |
       set -euxo pipefail
 
-      CONTAINER_NAME=${{ inputs.container-name }}
       TAG=runtimeverificationinc/${CONTAINER_NAME}
-      DOCKERFILE=${{ github.action_path }}/Dockerfile
-      K_DEB_PATH=${{ inputs.k-deb-path }}
       LLVM_BACKEND_DEB_PATH=llvm-backend.deb
       HASKELL_BACKEND_DEB_PATH=haskell-backend.deb
+      LLVM_BACKEND_VERSION=v$(cat deps/llvm-backend_release)
+      HASKELL_BACKEND_VERSION=$(cat deps/haskell-backend_release)
       UV_VERSION=$(cat deps/uv_release)
 
-      gh release download                           \
-        --repo runtimeverification/llvm-backend     \
-        --pattern "*ubuntu_${BASE_DISTRO}.deb"      \
-        --output "${LLVM_BACKEND_DEB_PATH}"         \
-        v$(cat deps/llvm-backend_release)
-
-      gh release download                           \
-        --repo runtimeverification/haskell-backend  \
-        --pattern "*ubuntu_${BASE_DISTRO}.deb"      \
-        --output "${HASKELL_BACKEND_DEB_PATH}"      \
-        $(cat deps/haskell-backend_release)
+      # Public release assets, downloaded without a GitHub token.
+      curl --fail --silent --show-error --location --output "${LLVM_BACKEND_DEB_PATH}" \
+        "https://github.com/runtimeverification/llvm-backend/releases/download/${LLVM_BACKEND_VERSION}/k-llvm-backend_${LLVM_BACKEND_VERSION}_amd64_ubuntu_${BASE_DISTRO}.deb"
+      curl --fail --silent --show-error --location --output "${HASKELL_BACKEND_DEB_PATH}" \
+        "https://github.com/runtimeverification/haskell-backend/releases/download/${HASKELL_BACKEND_VERSION}/k-haskell-backend_${HASKELL_BACKEND_VERSION}_amd64_ubuntu_${BASE_DISTRO}.deb"
 
       docker build . \
-        --file ${DOCKERFILE}                                        \
-        --tag ${TAG}                                                \
-        --build-arg BASE_DISTRO=${BASE_DISTRO}                      \
-        --build-arg K_DEB_PATH=${K_DEB_PATH}                        \
-        --build-arg INSTALL_BACKEND_DEBS=${INSTALL_BACKEND_DEBS}    \
-        --build-arg LLVM_BACKEND_DEB_PATH=${LLVM_BACKEND_DEB_PATH}  \
-        --build-arg "UV_VERSION=${UV_VERSION}"                      \
-        --build-arg HASKELL_BACKEND_DEB_PATH=${HASKELL_BACKEND_DEB_PATH}
+        --file "${DOCKERFILE}"                                        \
+        --tag "${TAG}"                                                \
+        --build-arg BASE_DISTRO="${BASE_DISTRO}"                      \
+        --build-arg K_DEB_PATH="${K_DEB_PATH}"                        \
+        --build-arg INSTALL_BACKEND_DEBS="${INSTALL_BACKEND_DEBS}"    \
+        --build-arg LLVM_BACKEND_DEB_PATH="${LLVM_BACKEND_DEB_PATH}"  \
+        --build-arg UV_VERSION="${UV_VERSION}"                        \
+        --build-arg HASKELL_BACKEND_DEB_PATH="${HASKELL_BACKEND_DEB_PATH}"
 
   - name: 'Run Docker container'
     shell: bash {0}
     if: ${{ inputs.run-container == 'true' }}
+    env:
+      CONTAINER_NAME: ${{ inputs.container-name }}
     run: |
       set -euxo pipefail
 
-      CONTAINER_NAME=${{ inputs.container-name }}
       TAG=runtimeverificationinc/${CONTAINER_NAME}
 
-      docker run                 \
-        --name ${CONTAINER_NAME} \
-        --rm                     \
-        --interactive            \
-        --tty                    \
-        --detach                 \
-        --user root              \
-        ${TAG}
+      # A container left over from a canceled run of the same commit would make 'docker run' fail.
+      docker rm -f "${CONTAINER_NAME}" || true
 
-      docker cp ./pyk/. ${CONTAINER_NAME}:/home/user
-      docker exec ${CONTAINER_NAME} chown -R user:user /home/user
+      docker run                   \
+        --name "${CONTAINER_NAME}" \
+        --rm                       \
+        --interactive              \
+        --tty                      \
+        --detach                   \
+        --user root                \
+        "${TAG}"
+
+      docker cp ./pyk/. "${CONTAINER_NAME}":/home/user
+      docker exec "${CONTAINER_NAME}" chown -R user:user /home/user

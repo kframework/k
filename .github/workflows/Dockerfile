@@ -1,23 +1,12 @@
-ARG BASE_OS
+ARG BASE_IMAGE
 ARG BASE_DISTRO
 ARG K_VERSION
 
-ARG Z3_VERSION
-FROM runtimeverificationinc/z3:${BASE_OS}-${BASE_DISTRO}-${Z3_VERSION} as Z3
+FROM stack:${BASE_DISTRO}-${K_VERSION} AS stack-deps
 
-ARG BASE_OS
-ARG BASE_DISTRO
-ARG K_VERSION
-FROM stack:${BASE_DISTRO}-${K_VERSION} as STACK
+FROM maven:${BASE_DISTRO}-${K_VERSION} AS maven-cache
 
-ARG BASE_OS
-ARG BASE_DISTRO
-ARG K_VERSION
-FROM maven:${BASE_DISTRO}-${K_VERSION} as MAVEN
-
-ARG BASE_OS
-ARG BASE_DISTRO
-FROM ${BASE_OS}:${BASE_DISTRO}
+FROM ${BASE_IMAGE}
 
 ENV TZ America/Chicago
 ENV DEBIAN_FRONTEND=noninteractive
@@ -64,11 +53,23 @@ RUN    apt-get update              \
         python3                    \
         python3-dev                \
         python3-pip                \
+        unzip                      \
         xxd                        \
         zlib1g-dev
 
-COPY --from=Z3 /usr/bin/z3 /usr/bin/z3
-COPY --from=STACK /usr/local/bin/stack /usr/local/bin/stack
+# Install the upstream Z3 release binary rather than pulling a prebuilt image from Docker Hub.
+# The checksum is for the zip of Z3_VERSION (deps/z3): when bumping it, update Z3_SHA256, and
+# Z3_ZIP if the asset name changed.
+ARG Z3_VERSION
+ARG Z3_SHA256=93f91f9c6f4a00a041c19fc7a74adc1f441c8244ce70d486e19abcd89c6a014b
+ARG Z3_ZIP=z3-${Z3_VERSION}-x64-glibc-2.35
+RUN    curl --fail --silent --show-error --location --output /tmp/z3.zip                             \
+         "https://github.com/Z3Prover/z3/releases/download/z3-${Z3_VERSION}/${Z3_ZIP}.zip" \
+    && echo "${Z3_SHA256}  /tmp/z3.zip" | sha256sum --check --strict                              \
+    && unzip -j /tmp/z3.zip "${Z3_ZIP}/bin/z3" -d /usr/bin                                         \
+    && rm /tmp/z3.zip
+
+COPY --from=stack-deps /usr/local/bin/stack /usr/local/bin/stack
 
 RUN locale-gen en_US.UTF-8
 ENV LANG en_US.UTF-8
@@ -83,6 +84,9 @@ ARG GROUP_ID=$USER_ID
 RUN groupadd -g $GROUP_ID $GROUP && useradd -m -u $USER_ID -s /bin/sh -g $GROUP $USER
 
 USER $USER:$GROUP
+# The sources are copied in here, see .github/actions/with-docker.
+RUN mkdir /home/$USER/workspace
+WORKDIR /home/$USER/workspace
 
-COPY --from=STACK --chown=$USER:$GROUP /home/$USER/.stack /home/$USER/.stack
-COPY --from=MAVEN --chown=$USER:$GROUP /home/$USER/.m2 /home/$USER/.m2
+COPY --from=stack-deps --chown=$USER:$GROUP /home/$USER/.stack /home/$USER/.stack
+COPY --from=maven-cache --chown=$USER:$GROUP /home/$USER/.m2 /home/$USER/.m2

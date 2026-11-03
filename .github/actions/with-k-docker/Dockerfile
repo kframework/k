@@ -1,6 +1,7 @@
 ARG BASE_DISTRO
 
-FROM ubuntu:${BASE_DISTRO}
+# ECR Public mirror of the Docker official images, without Docker Hub's pull rate limit.
+FROM public.ecr.aws/docker/library/ubuntu:${BASE_DISTRO}
 
 ARG K_DEB_PATH
 ARG INSTALL_BACKEND_DEBS

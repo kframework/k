@@ -8,7 +8,7 @@ inputs:
     description: 'Subdirectory where code is cloned.'
     required: false
     default: "./"
-  os: 
+  os:
     description: 'OS to setup Docker for.'
     required: true
   distro:
@@ -42,44 +42,42 @@ runs:
     run: |
       set -euxo pipefail
 
+      # Pull base images from the ECR Public mirror of the Docker official images, which
+      # does not have Docker Hub's anonymous pull rate limit.
+      BASE_IMAGE="public.ecr.aws/docker/library/${BASE_OS}:${BASE_DISTRO}"
       Z3_VERSION=$(cat deps/z3)
-      K_VERSION=$(cat ${SUBDIR}package/version)
-      USER=$(id -un)
-      USER_ID=$(id -u)
-      GROUP=$(id -gn)
-      GROUP_ID=$(id -g)
+      K_VERSION=$(cat "${SUBDIR}package/version")
+      # The image's user and WORKDIR, see the Dockerfile.
+      WORKSPACE=/home/github-user/workspace
 
-      docker build ${SUBDIR}                                          \
-          --build-arg USER=${USER} --build-arg USER_ID=${USER_ID}     \
-          --build-arg GROUP=${GROUP} --build-arg GROUP_ID=${GROUP_ID} \
-          --build-arg BASE_OS=${BASE_OS}                              \
-          --build-arg BASE_DISTRO=${BASE_DISTRO}                      \
-          --tag stack:${BASE_DISTRO}-${K_VERSION}                     \
-          --file ${SUBDIR}${DOCKERFILE}.stack-deps
-      docker build ${SUBDIR}                                          \
-          --build-arg USER=${USER} --build-arg USER_ID=${USER_ID}     \
-          --build-arg GROUP=${GROUP} --build-arg GROUP_ID=${GROUP_ID} \
-          --build-arg BASE_OS=${BASE_OS}                              \
-          --build-arg BASE_DISTRO=${BASE_DISTRO}                      \
-          --tag maven:${BASE_DISTRO}-${K_VERSION}                     \
-          --file ${SUBDIR}${DOCKERFILE}.maven-cache
+      docker build "${SUBDIR}"                      \
+          --build-arg BASE_IMAGE="${BASE_IMAGE}"    \
+          --tag "stack:${BASE_DISTRO}-${K_VERSION}" \
+          --file "${SUBDIR}${DOCKERFILE}.stack-deps"
+      docker build "${SUBDIR}"                      \
+          --build-arg BASE_IMAGE="${BASE_IMAGE}"    \
+          --tag "maven:${BASE_DISTRO}-${K_VERSION}" \
+          --file "${SUBDIR}${DOCKERFILE}.maven-cache"
 
-      docker build ${SUBDIR} --file ${SUBDIR}${DOCKERFILE}            \
-          --tag runtimeverification/${TAG_NAME}                       \
-          --build-arg BASE_OS=${BASE_OS}                              \
-          --build-arg BASE_DISTRO=${BASE_DISTRO}                      \
-          --build-arg Z3_VERSION=${Z3_VERSION}                        \
-          --build-arg K_VERSION=${K_VERSION}                          \
-          --build-arg LLVM_VERSION=${LLVM_VERSION}                    \
-          --build-arg JDK_VERSION=${JDK_VERSION}                      \
-          --build-arg USER=${USER} --build-arg USER_ID=${USER_ID}     \
-          --build-arg GROUP=${GROUP} --build-arg GROUP_ID=${GROUP_ID}
+      docker build "${SUBDIR}" --file "${SUBDIR}${DOCKERFILE}" \
+          --tag "runtimeverification/${TAG_NAME}"              \
+          --build-arg BASE_IMAGE="${BASE_IMAGE}"               \
+          --build-arg BASE_DISTRO="${BASE_DISTRO}"             \
+          --build-arg Z3_VERSION="${Z3_VERSION}"               \
+          --build-arg K_VERSION="${K_VERSION}"                 \
+          --build-arg LLVM_VERSION="${LLVM_VERSION}"           \
+          --build-arg JDK_VERSION="${JDK_VERSION}"
 
-      docker run                             \
-          --name ${TAG_NAME}                 \
-          --rm -it                           \
-          --detach                           \
-          --workdir /opt/workspace/${SUBDIR} \
-          --user ${USER}:${GROUP}            \
-          -v "$(pwd):/opt/workspace"         \
-          runtimeverification/${TAG_NAME}
+      # A container left over from a canceled run of the same commit would make 'docker run' fail.
+      docker rm -f "${TAG_NAME}" || true
+
+      docker run               \
+          --name "${TAG_NAME}" \
+          --rm -it             \
+          --detach             \
+          "runtimeverification/${TAG_NAME}"
+
+      # Copy the sources in instead of bind-mounting them: on rootless Podman runners the
+      # container user cannot write to a bind-mounted host directory.
+      docker cp "${SUBDIR}." "${TAG_NAME}:${WORKSPACE}"
+      docker exec --user root "${TAG_NAME}" chown -R github-user:github-user "${WORKSPACE}"
