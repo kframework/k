@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   actionlint:
-    name: 'actionlint'
+    name: 'Run actionlint'
     runs-on: ubuntu-24.04
     steps:
       - name: 'Check out code'
