@@ -1,0 +1,50 @@
+name: 'Lint Workflows'
+on:
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: 'Run actionlint'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 'Check out code'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 'Install actionlint'
+        env:
+          # Pin the release and verify it, both values should be updated together.
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          set -euxo pipefail
+          curl --fail --silent --show-error --location --output actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file actionlint.tar.gz actionlint
+      - name: 'Run actionlint'
+        run: ./actionlint -color
+
+  zizmor:
+    name: 'zizmor'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 'Check out code'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 'Run zizmor'
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd  # v0.8.1
+        with:
+          version: '1.32.0'
+          online-audits: false
+          # Annotate findings and fail the check, rather than upload SARIF to code scanning,
+          # which needs `security-events: write` and does not fail the check.
+          advanced-security: false
+          annotations: true

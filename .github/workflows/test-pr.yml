@@ -8,17 +8,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# No job here writes to the repository, so the token stays read-only regardless of
+# the repository default.
+permissions:
+  contents: read
+
 jobs:
   format-check:
     name: 'Java: Linting'
     runs-on: ubuntu-24.04
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
       - name: 'Set up Java 17'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
           distribution: 'zulu'
           java-version: 17
@@ -41,7 +47,9 @@ jobs:
         working-directory: ./pyk
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Set up environment'
         uses: ./.github/actions/setup-pyk-env
         with:
@@ -70,9 +78,10 @@ jobs:
     needs: code-quality
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
       - name: 'Set up Docker'
         uses: ./.github/actions/with-docker
         with:
@@ -85,8 +94,9 @@ jobs:
       - name: 'Tear down Docker'
         if: always()
         run: |
-          docker stop --time=0 "k-ci-${GITHUB_SHA}"
-          docker container rm --force "k-ci-${GITHUB_SHA}" || true
+          # Best effort: the container does not exist if 'Set up Docker' failed, and a
+          # non-zero exit here would mask the step that actually failed.
+          docker rm -f "k-ci-${GITHUB_SHA}" || true
 
 
   test-package-ubuntu-jammy:
@@ -94,7 +104,10 @@ jobs:
     runs-on: [self-hosted, linux, normal]
     needs: code-quality
     steps:
-      - uses: actions/checkout@v4
+      - name: 'Check out code'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Build and Test'
         uses: ./.github/actions/test-package
         with:
@@ -105,14 +118,14 @@ jobs:
           test-package: package/debian/test-package
       - name: On Failure, Upload the kore-exec.tar.gz file to the Summary Page
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: kore-exec.tar.gz
           path: |
             **/kore-exec.tar.gz
       - name: 'On Success, Upload the package built to the Summary Page'
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: kframework.deb
           path: kframework.deb
@@ -125,7 +138,10 @@ jobs:
     runs-on: [self-hosted, linux, normal]
     needs: code-quality
     steps:
-      - uses: actions/checkout@v4
+      - name: 'Check out code'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Build and Test'
         uses: ./.github/actions/test-package
         with:
@@ -136,14 +152,14 @@ jobs:
           test-package: package/debian/test-frontend-package
       - name: On Failure, Upload the kore-exec.tar.gz file to the Summary Page
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: kore-exec.tar.gz
           path: |
             **/kore-exec.tar.gz
       - name: 'On Success, Upload the package built to the Summary Page'
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: kframework-frontend.deb
           path: kframework-frontend.deb
@@ -160,16 +176,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Install Nix'
-        uses: cachix/install-nix-action@v31.5.1
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b  # v31.11.3
         with:
           install_url: https://releases.nixos.org/nix/nix-2.30.1/install
           extra_nix_config: |
             substituters = http://cache.nixos.org
             trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       - name: 'Install Cachix'
-        uses: cachix/cachix-action@v14
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866  # v17
         with:
           name: k-framework
           skipPush: true
@@ -192,36 +210,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Upgrade bash'
         if: ${{ contains(matrix.os, 'macos') }}
         run: brew install bash
-      - name: 'Install Nix'
-        if: ${{ !startsWith(matrix.os, 'self') }}
-        uses: cachix/install-nix-action@v31.5.1
-        with:
-          install_url: https://releases.nixos.org/nix/nix-2.30.1/install
-          extra_nix_config: |
-            substituters = http://cache.nixos.org
-            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-      - name: 'Install Cachix'
-        if: ${{ !startsWith(matrix.os, 'self') }}
-        uses: cachix/cachix-action@v14
-        with:
-          name: k-framework
-          authToken: '${{ secrets.CACHIX_PUBLIC_TOKEN }}'
-          skipPush: true
-      - name: 'Build K Framework and push build time dependencies to cachix'
-        env:
-          NIX_PATH: 'nixpkgs=http://nixos.org/channels/nixos-22.05/nixexprs.tar.xz'
-          GC_DONT_GC: '1'
+      - name: 'Build K Framework'
         run: |
           nix --version
-          JQ=$(nix-build '<nixpkgs>' -A jq --no-link)/bin/jq
-          export JQ
-          k=$(nix build . --print-build-logs --json --no-update-lock-file | $JQ -r '.[].outputs | to_entries[].value')
-          drv=$(nix-store --query --deriver "$k")
-          nix-store --query --requisites "$drv" | cachix push k-framework
+          GC_DONT_GC=1 nix build . --print-build-logs --no-update-lock-file
       - name: 'Smoke test K'
         run: GC_DONT_GC=1 nix build --print-build-logs .#smoke-test
       # These tests take a really long time to run on other platforms, so we
@@ -237,9 +235,11 @@ jobs:
     runs-on: [self-hosted, linux, normal]
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Download K package from the Summary Page'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: kframework-frontend.deb
       - name: 'Set up Docker'
@@ -248,10 +248,10 @@ jobs:
           container-name: k-pyk-docs-${{ github.sha }}
           k-deb-path: kframework-frontend.deb
       - name: 'Build documentation'
-        run: docker exec -u user k-pyk-docs-${{ github.sha }} make docs
+        run: docker exec -u user "k-pyk-docs-${GITHUB_SHA}" make docs
       - name: 'Tear down Docker'
         if: always()
-        run: docker stop --time=0 k-pyk-docs-${{ github.sha }}
+        run: docker rm -f "k-pyk-docs-${GITHUB_SHA}" || true
 
 
   pyk-profile:
@@ -261,9 +261,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Download K package from the Summary Page'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: kframework-frontend.deb
       - name: 'Set up Docker'
@@ -274,12 +276,11 @@ jobs:
           distro: jammy
       - name: 'Run profiling'
         run: |
-          docker exec -u user k-pyk-profile-${{ github.sha }} make profile PROF_ARGS=-n4
-          docker exec -u user k-pyk-profile-${{ github.sha }} /bin/bash -c 'find /tmp/pytest-of-user/pytest-current/ -type f -name "*.prof" | sort | xargs tail -n +1'
+          docker exec -u user "k-pyk-profile-${GITHUB_SHA}" make profile PROF_ARGS=-n4
+          docker exec -u user "k-pyk-profile-${GITHUB_SHA}" /bin/bash -c 'find /tmp/pytest-of-user/pytest-current/ -type f -name "*.prof" | sort | xargs tail -n +1'
       - name: 'Tear down Docker'
         if: always()
-        run: |
-          docker stop --time=0 k-pyk-profile-${{ github.sha }}
+        run: docker rm -f "k-pyk-profile-${GITHUB_SHA}" || true
 
 
   pyk-integration-tests:
@@ -289,9 +290,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Download K package from the Summary Page'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: kframework-frontend.deb
       - name: 'Set up Docker'
@@ -302,11 +305,10 @@ jobs:
           distro: jammy
       - name: 'Run integration tests'
         run: |
-          docker exec -u user k-pyk-integration-${{ github.sha }} make test-integration TEST_ARGS='-n4 --maxfail=0 --timeout=300'
+          docker exec -u user "k-pyk-integration-${GITHUB_SHA}" make test-integration TEST_ARGS='-n4 --maxfail=0 --timeout=300'
       - name: 'Tear down Docker'
         if: always()
-        run: |
-          docker stop --time=0 k-pyk-integration-${{ github.sha }}
+        run: docker rm -f "k-pyk-integration-${GITHUB_SHA}" || true
 
 
   pyk-regression-tests:
@@ -316,9 +318,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: 'Check out code'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: 'Download K package from the Summary Page'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: kframework-frontend.deb
       - name: 'Set up Docker'
@@ -329,12 +333,11 @@ jobs:
           distro: jammy
       - name: 'Run K regression tests'
         run: |
-          docker exec -u user k-pyk-regression-${{ github.sha }} uv sync
-          docker exec -u user k-pyk-regression-${{ github.sha }} make test-regression-new -j8
+          docker exec -u user "k-pyk-regression-${GITHUB_SHA}" uv sync
+          docker exec -u user "k-pyk-regression-${GITHUB_SHA}" make test-regression-new -j8
       - name: 'Tear down Docker'
         if: always()
-        run: |
-          docker stop --time=0 k-pyk-regression-${{ github.sha }}
+        run: docker rm -f "k-pyk-regression-${GITHUB_SHA}" || true
 
 
 
