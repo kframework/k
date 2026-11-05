@@ -90,19 +90,19 @@ class KCFGStore:
         nodes = [self.read_node_data(node_id) for node_id in dct.get('nodes') or []]
         dct['nodes'] = nodes
 
+        vacuous = set(dct.pop('vacuous', []))
+        stuck = set(dct.pop('stuck', []))
+
         new_nodes = []
         for node in dct['nodes']:
             attrs = []
-            if node['id'] in dct['vacuous']:
+            if node['id'] in vacuous:
                 attrs.append(KCFGNodeAttr.VACUOUS.value)
-            if node['id'] in dct['stuck']:
+            if node['id'] in stuck:
                 attrs.append(KCFGNodeAttr.STUCK.value)
             new_nodes.append({'id': node['id'], 'cterm': node['cterm'], 'attrs': attrs})
 
         dct['nodes'] = new_nodes
-
-        del dct['vacuous']
-        del dct['stuck']
 
         return dct
 
