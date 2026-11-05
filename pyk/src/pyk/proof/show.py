@@ -7,7 +7,7 @@ from ..kcfg.show import KCFGShow, NodePrinter
 from ..utils import ensure_dir_path
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
     from pathlib import Path
     from typing import Final
 
@@ -76,7 +76,28 @@ class APRProofShow:
         minimize: bool = True,
         omit_cells: Iterable[str] = (),
     ) -> list[str]:
-        res_lines = self.kcfg_show.show(
+        return list(
+            self.show_iter(
+                proof,
+                nodes=nodes,
+                node_deltas=node_deltas,
+                to_module=to_module,
+                minimize=minimize,
+                omit_cells=omit_cells,
+            )
+        )
+
+    def show_iter(
+        self,
+        proof: APRProof,
+        nodes: Iterable[NodeIdLike] = (),
+        node_deltas: Iterable[tuple[NodeIdLike, NodeIdLike]] = (),
+        to_module: bool = False,
+        minimize: bool = True,
+        omit_cells: Iterable[str] = (),
+    ) -> Iterator[str]:
+        """Yield proof show output line-by-line, avoiding memory accumulation."""
+        yield from self.kcfg_show.show_iter(
             proof.kcfg,
             nodes=nodes,
             node_deltas=node_deltas,
@@ -85,7 +106,45 @@ class APRProofShow:
             omit_cells=omit_cells,
             module_name=f'SUMMARY-{proof.id.upper().replace("_", "-")}',
         )
-        return res_lines
+
+    def show_iter_from_disk(
+        self,
+        proof_dir: Path,
+        proof_id: str,
+        minimize: bool = True,
+    ) -> Iterator[str]:
+        """Yield proof show output line-by-line, loading data from disk on demand.
+
+        Unlike show/show_iter, this does not load the entire proof into memory.
+        Node CTerms and cover CSubsts are loaded lazily when accessed for printing.
+        """
+        import json
+
+        from ..kcfg.kcfg import KCFG
+        from ..kcfg.lazy import APRProofStub
+
+        proof_subdir = proof_dir / proof_id
+        cfg_dir = proof_subdir / 'kcfg'
+
+        # Load KCFG with lazy stubs
+        kcfg = KCFG.read_cfg_data_lazy(cfg_dir)
+
+        # If the node_printer is proof-aware, swap in a lightweight stub
+        _original_proof = getattr(self.kcfg_show.node_printer, 'proof', None)
+        if _original_proof is not None:
+            proof_dict = json.loads((proof_subdir / 'proof.json').read_text())
+            proof_stub = APRProofStub(proof_dict, kcfg)
+            object.__setattr__(self.kcfg_show.node_printer, 'proof', proof_stub)
+
+        # Use existing show_iter with the lazy KCFG
+        yield from self.kcfg_show.show_iter(
+            kcfg,
+            minimize=minimize,
+        )
+
+        # Restore original proof if swapped
+        if _original_proof is not None:
+            object.__setattr__(self.kcfg_show.node_printer, 'proof', _original_proof)
 
     def dot(self, proof: APRProof) -> Digraph:
         graph = self.kcfg_show.dot(proof.kcfg)

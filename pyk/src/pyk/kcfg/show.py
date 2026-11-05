@@ -25,7 +25,7 @@ from ..utils import add_indent, ensure_dir_path
 from .kcfg import KCFG
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
     from pathlib import Path
     from typing import Final
 
@@ -326,8 +326,30 @@ class KCFGShow:
         omit_cells: Iterable[str] = (),
         module_name: str | None = None,
     ) -> list[str]:
-        res_lines: list[str] = []
-        res_lines += self.pretty(cfg, minimize=minimize)
+        return list(
+            self.show_iter(
+                cfg,
+                nodes=nodes,
+                node_deltas=node_deltas,
+                to_module=to_module,
+                minimize=minimize,
+                omit_cells=omit_cells,
+                module_name=module_name,
+            )
+        )
+
+    def show_iter(
+        self,
+        cfg: KCFG,
+        nodes: Iterable[NodeIdLike] = (),
+        node_deltas: Iterable[tuple[NodeIdLike, NodeIdLike]] = (),
+        to_module: bool = False,
+        minimize: bool = True,
+        omit_cells: Iterable[str] = (),
+        module_name: str | None = None,
+    ) -> Iterator[str]:
+        """Yield proof show output line-by-line, avoiding memory accumulation."""
+        yield from self.pretty(cfg, minimize=minimize)
 
         nodes_printed = False
 
@@ -337,12 +359,12 @@ class KCFGShow:
             kast = KCFGShow.hide_cells(kast, omit_cells)
             if minimize:
                 kast = minimize_term(kast)
-            res_lines.append('')
-            res_lines.append('')
-            res_lines.append(f'Node {node_id}:')
-            res_lines.append('')
-            res_lines.append(self.pretty_printer.print(kast))
-            res_lines.append('')
+            yield ''
+            yield ''
+            yield f'Node {node_id}:'
+            yield ''
+            yield self.pretty_printer.print(kast)
+            yield ''
 
         for node_id_1, node_id_2 in node_deltas:
             nodes_printed = True
@@ -351,23 +373,21 @@ class KCFGShow:
             config_delta = push_down_rewrites(KRewrite(config_1, config_2))
             if minimize:
                 config_delta = minimize_term(config_delta)
-            res_lines.append('')
-            res_lines.append('')
-            res_lines.append(f'State Delta {node_id_1} => {node_id_2}:')
-            res_lines.append('')
-            res_lines.append(self.pretty_printer.print(config_delta))
-            res_lines.append('')
+            yield ''
+            yield ''
+            yield f'State Delta {node_id_1} => {node_id_2}:'
+            yield ''
+            yield self.pretty_printer.print(config_delta)
+            yield ''
 
-        if not (nodes_printed):
-            res_lines.append('')
-        res_lines.append('')
-        res_lines.append('')
+        if not nodes_printed:
+            yield ''
+        yield ''
+        yield ''
 
         if to_module:
             module = self.to_module(cfg, module_name, omit_cells=omit_cells)
-            res_lines.append(self.pretty_printer.print(module))
-
-        return res_lines
+            yield self.pretty_printer.print(module)
 
     def dot(self, kcfg: KCFG) -> Digraph:
         def _short_label(label: str) -> str:

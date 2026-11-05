@@ -20,7 +20,7 @@ from pyk.kcfg.show import KCFGShow
 from pyk.proof import APRProver, ProofStatus
 from pyk.proof.proof import parallel_advance_proof
 from pyk.proof.reachability import APRFailureInfo, APRProof
-from pyk.proof.show import APRProofNodePrinter
+from pyk.proof.show import APRProofNodePrinter, APRProofShow
 from pyk.testing import KCFGExploreTest, KProveTest, ParallelTest
 from pyk.utils import single
 
@@ -951,6 +951,11 @@ class TestImpProof(KCFGExploreTest, KProveTest):
         cfg_lines = kcfg_show.show(proof.kcfg)
         _LOGGER.info('\n'.join(cfg_lines))
 
+        # Verify show_iter_from_disk produces identical output
+        apr_show = APRProofShow(kprove.definition, node_printer=kcfg_show.node_printer)
+        disk_lines = list(apr_show.show_iter_from_disk(proof_dir, proof.id))
+        assert cfg_lines == disk_lines, 'show_iter_from_disk output differs from show'
+
         assert proof.status == proof_status
         assert leaf_number(proof) == expected_leaf_number
 
@@ -1004,6 +1009,11 @@ class TestImpProof(KCFGExploreTest, KProveTest):
         )
         cfg_lines = kcfg_show.show(proof.kcfg)
         _LOGGER.info('\n'.join(cfg_lines))
+
+        # Verify show_iter_from_disk produces identical output
+        apr_show = APRProofShow(kprove.definition, node_printer=kcfg_show.node_printer)
+        disk_lines = list(apr_show.show_iter_from_disk(proof_dir, proof.id))
+        assert cfg_lines == disk_lines, 'show_iter_from_disk output differs from show'
 
         assert proof.status == proof_status
         assert len(proof.kcfg._nodes) == expected_nodes
@@ -1305,6 +1315,82 @@ class TestImpProof(KCFGExploreTest, KProveTest):
         assert proof.dict == proof_from_disk.dict
         assert proof.kcfg.nodes == proof_from_disk.kcfg.nodes
 
+    def test_apr_prove_auto_evict(
+        self,
+        kprove: KProve,
+        kcfg_explore: KCFGExplore,
+        tmp_path_factory: TempPathFactory,
+    ) -> None:
+        claim = single(
+            kprove.get_claims(
+                Path(K_FILES / 'imp-simple-spec.k'),
+                spec_module_name='IMP-SIMPLE-SPEC',
+                claim_labels=['IMP-SIMPLE-SPEC.addition-1'],
+            )
+        )
+
+        # Run without auto_evict
+        proof_dir_base = tmp_path_factory.mktemp('apr_auto_evict_base')
+        proof_base = APRProof.from_claim(kprove.definition, claim, logs={}, proof_dir=proof_dir_base)
+        kcfg_explore.simplify(proof_base.kcfg, {})
+        prover_base = APRProver(kcfg_explore=kcfg_explore, execute_depth=1)
+        prover_base.advance_proof(proof_base)
+
+        # Run with auto_evict
+        proof_dir_evict = tmp_path_factory.mktemp('apr_auto_evict_evict')
+        proof_evict = APRProof.from_claim(kprove.definition, claim, logs={}, proof_dir=proof_dir_evict, auto_evict=True)
+        kcfg_explore.simplify(proof_evict.kcfg, {})
+        prover_evict = APRProver(kcfg_explore=kcfg_explore, execute_depth=1)
+        prover_evict.advance_proof(proof_evict)
+
+        # Verify eviction actually happened
+        evicted = [n for n in proof_evict.kcfg.nodes if n._cterm is None]
+        assert len(evicted) > 0, 'Expected at least one evicted node'
+
+        assert proof_base.status == proof_evict.status
+        assert proof_base.dict == proof_evict.dict
+
+    def test_apr_prove_auto_evict_resume(
+        self,
+        kprove: KProve,
+        kcfg_explore: KCFGExplore,
+        tmp_path_factory: TempPathFactory,
+    ) -> None:
+        claim = single(
+            kprove.get_claims(
+                Path(K_FILES / 'imp-simple-spec.k'),
+                spec_module_name='IMP-SIMPLE-SPEC',
+                claim_labels=['IMP-SIMPLE-SPEC.addition-2'],
+            )
+        )
+
+        # Run baseline to completion
+        proof_dir_base = tmp_path_factory.mktemp('apr_auto_evict_resume_base')
+        proof_base = APRProof.from_claim(kprove.definition, claim, logs={}, proof_dir=proof_dir_base)
+        kcfg_explore.simplify(proof_base.kcfg, {})
+        prover_base = APRProver(kcfg_explore=kcfg_explore, execute_depth=1)
+        prover_base.advance_proof(proof_base)
+
+        # Run partial proof (1 iteration), save to disk
+        proof_dir_resume = tmp_path_factory.mktemp('apr_auto_evict_resume')
+        proof_partial = APRProof.from_claim(kprove.definition, claim, logs={}, proof_dir=proof_dir_resume)
+        kcfg_explore.simplify(proof_partial.kcfg, {})
+        prover_partial = APRProver(kcfg_explore=kcfg_explore, execute_depth=1)
+        prover_partial.advance_proof(proof_partial, max_iterations=1)
+        proof_partial.write_proof_data()
+
+        # Resume from disk with auto_evict=True
+        proof_resumed = APRProof.read_proof_data(proof_dir_resume, proof_partial.id, auto_evict=True)
+        prover_resumed = APRProver(kcfg_explore=kcfg_explore, execute_depth=1)
+        prover_resumed.advance_proof(proof_resumed)
+
+        # Verify eviction actually happened
+        evicted = [n for n in proof_resumed.kcfg.nodes if n._cterm is None]
+        assert len(evicted) > 0, 'Expected at least one evicted node'
+
+        assert proof_base.status == proof_resumed.status
+        assert proof_base.dict == proof_resumed.dict
+
     def test_fail_fast(
         self,
         kprove: KProve,
@@ -1563,6 +1649,11 @@ class TestImpParallelProof(ParallelTest, KProveTest):
         )
         cfg_lines = kcfg_show.show(proof.kcfg)
         _LOGGER.info('\n'.join(cfg_lines))
+
+        # Verify show_iter_from_disk produces identical output
+        apr_show = APRProofShow(kprove.definition, node_printer=kcfg_show.node_printer)
+        disk_lines = list(apr_show.show_iter_from_disk(proof_dir, proof.id))
+        assert cfg_lines == disk_lines, 'show_iter_from_disk output differs from show'
 
         assert proof.status == proof_status
         assert leaf_number(proof) == expected_leaf_number
