@@ -94,21 +94,34 @@ object ModuleTransformer {
 
 /**
  * Transform all modules, transforming each module after its imports. The f function take a module
- * with all the imported modules already transformed, and changes the current module.
+ * with all the imported modules already transformed, and changes the current module. Modules for
+ * which `skip` holds are returned unchanged, and so are their imports.
  */
-class ModuleTransformer(f: Module => Module, name: String) extends (Module => Module) {
+class ModuleTransformer(
+    f: Module => Module,
+    name: String,
+    skip: java.util.function.Predicate[Module]
+) extends (Module => Module) {
+  def this(f: Module => Module, name: String) = this(f, name, _ => false)
+
+  /** This transformation, but leaving the modules for which `p` holds (and their imports) as is. */
+  def skipping(p: java.util.function.Predicate[Module]): ModuleTransformer =
+    new ModuleTransformer(f, name, p)
+
   val memoization = collection.concurrent.TrieMap[Module, Module]()
 
   override def apply(input: Module): Module =
-    memoization.getOrElseUpdate(
-      input, {
-        var newImports = input.imports.map(i => Import(this(i.module), i.isPublic))
-        if (newImports != input.imports)
-          f(Module(input.name, newImports, input.localSentences, input.att))
-        else
-          f(input)
-      }
-    )
+    if (skip.test(input)) input
+    else
+      memoization.getOrElseUpdate(
+        input, {
+          var newImports = input.imports.map(i => Import(this(i.module), i.isPublic))
+          if (newImports != input.imports)
+            f(Module(input.name, newImports, input.localSentences, input.att))
+          else
+            f(input)
+        }
+      )
 }
 
 object DefinitionTransformer {

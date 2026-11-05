@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import org.apache.commons.io.FilenameUtils;
 import org.kframework.attributes.Att;
 import org.kframework.backend.Backends;
@@ -320,8 +322,17 @@ public class KoreBackend implements Backend {
     return d -> applyPipeline.apply(d);
   }
 
+  /**
+   * The passes applied to a spec module and its imports. The modules of the kompiled definition
+   * {@code def} are replaced by their kompiled versions afterwards, so only the passes that prepare
+   * macro expansion (and the functions that need the configuration) are applied to them. The other
+   * passes are applied only to the modules that are not part of {@code def}.
+   */
   @Override
   public Function<Module, Module> specificationSteps(Definition def) {
+    Set<String> definitionModules =
+        stream(def.modules()).map(Module::name).collect(Collectors.toSet());
+    Predicate<Module> inDefinition = m -> definitionModules.contains(m.name());
     ModuleTransformer resolveComm =
         ModuleTransformer.from(new ResolveComm(kem)::resolve, "resolve comm simplification rules");
     Module mod = def.mainModule();
@@ -351,6 +362,7 @@ public class KoreBackend implements Backend {
                       new ExpandMacros(transformer, m2, files, kem, kompileOptions, false)
                           .expand(s),
                   "expand macros")
+              .skipping(inDefinition)
               .apply(m);
         };
     Function1<Module, Module> checkSimplificationRules =
@@ -359,18 +371,22 @@ public class KoreBackend implements Backend {
               m.localRules().foreach(r -> checkSimpIsFunc(m, r));
               return m;
             },
-            "Check simplification rules");
+            "Check simplification rules")
+            .skipping(inDefinition);
     ModuleTransformer subsortKItem =
-        ModuleTransformer.from(Kompile::subsortKItem, "subsort all sorts to KItem");
+        ModuleTransformer.from(Kompile::subsortKItem, "subsort all sorts to KItem")
+            .skipping(inDefinition);
     ModuleTransformer addImplicitComputationCell =
         ModuleTransformer.fromSentenceTransformer(
             new AddImplicitComputationCell(configInfo, labelInfo)::apply,
-            "concretizing configuration");
+            "concretizing configuration")
+            .skipping(inDefinition);
     Function1<Module, Module> resolveFreshConstants =
         d ->
             ModuleTransformer.from(
                     new ResolveFreshConstants(kem, def, kompileOptions.topCell, files)::resolve,
                     "resolving !Var variables")
+                .skipping(inDefinition)
                 .apply(d);
     Function1<Module, Module> addImplicitCounterCell =
         ModuleTransformer.fromSentenceTransformer(
@@ -379,13 +395,21 @@ public class KoreBackend implements Backend {
     ModuleTransformer concretizeCells =
         ModuleTransformer.fromSentenceTransformer(
             new ConcretizeCells(configInfo, labelInfo, sortInfo, mod)::concretize,
-            "concretizing configuration");
+            "concretizing configuration")
+            .skipping(inDefinition);
     Function1<Module, Module> generateSortProjections =
         m ->
             ModuleTransformer.from(
                     new GenerateSortProjections(false, m)::gen, "adding sort projections")
                 .apply(m);
 
+    ModuleTransformer numberSpecSentences = numberSentences.skipping(inDefinition);
+
+    // Up to macro expansion, the passes are applied to the definition modules too: macro expansion
+    // and ResolveFunctionWithConfig read the macro rules and function rules in the form these
+    // passes give them, which differs from their kompiled form (e.g. after constant folding, or
+    // after the configuration argument has been added). The definition modules are then replaced
+    // by their kompiled versions, and the remaining passes transform only the spec's own modules.
     return m ->
         resolveComm
             .andThen(addImplicitCounterCell)
@@ -395,13 +419,13 @@ public class KoreBackend implements Backend {
             .andThen(generateSortProjections)
             .andThen(propagateMacroToRules)
             .andThen(expandMacros)
+            .andThen(restoreDefinitionModulesTransformer(def))
             .andThen(checkSimplificationRules)
             .andThen(addImplicitComputationCell)
             .andThen(resolveFreshConstants)
             .andThen(concretizeCells)
             .andThen(subsortKItem)
-            .andThen(restoreDefinitionModulesTransformer(def))
-            .andThen(numberSentences)
+            .andThen(numberSpecSentences)
             .apply(m);
   }
 
