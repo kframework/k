@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pyk.kast.inner import KVariable, flatten_label, keep_vars_sorted
+from pyk.kast.inner import KSort, KVariable, flatten_label, keep_vars_sorted
 
 from ..utils import a, f, g, x, y, z
 
@@ -69,3 +69,23 @@ def test_keep_vars_sorted(occurrences: dict[str, list[KVariable]], expected: dic
 
     # Then
     assert actual == expected
+
+
+_INT: Final = KSort('Int')
+_N: Final = KSort('N')
+_MINT_N: Final = KSort('MInt', (_N,))
+_MINT_INT: Final = KSort('MInt', (_INT,))
+
+KSORT_CONTAINS_DATA: Final[tuple[tuple[str, KSort, KSort, bool], ...]] = (
+    ('self', _N, _N, True),
+    ('nested_one_level', _MINT_N, _N, True),
+    ('nested_two_levels', KSort('Foo', (_MINT_N,)), _N, True),
+    ('concrete_does_not_contain_param', _MINT_INT, _N, False),
+    ('unrelated', _INT, _N, False),
+)
+
+
+@pytest.mark.parametrize('test_id,sort,other,expected', KSORT_CONTAINS_DATA, ids=[d[0] for d in KSORT_CONTAINS_DATA])
+def test_ksort_contains(test_id: str, sort: KSort, other: KSort, expected: bool) -> None:
+    # When/Then
+    assert sort.contains(other) == expected

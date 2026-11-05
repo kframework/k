@@ -17,6 +17,7 @@ from ..utils import FrozenDict, POSet, filter_none, not_none, single, unique
 from .att import EMPTY_ATT, Atts, Format, KAst, KAtt, WithKAtt
 from .inner import (
     KApply,
+    KAs,
     KInner,
     KLabel,
     KRewrite,
@@ -30,7 +31,7 @@ from .inner import (
     top_down,
 )
 from .kast import kast_term
-from .prelude.k import K_ITEM, K
+from .prelude.k import K_ITEM, SORT_PARAM_SENTINEL, K
 from .rewrite import indexed_rewrite
 
 if TYPE_CHECKING:
@@ -1000,6 +1001,40 @@ class KRequire(KOuter):
         return KRequire(require=require)
 
 
+def _match_sort_params(
+    parametric: KSort,
+    actual: KSort,
+    params: frozenset[KSort],
+    subsorts_fn: Callable[[KSort], frozenset[KSort]] | None = None,
+) -> dict[KSort, list[KSort]]:
+    """Match ``parametric`` sort against ``actual``, collecting candidate bindings per sort param.
+
+    Three matching strategies, mirroring Java ``AddSortInjections.match()``:
+
+    1. Direct: ``parametric`` is itself a sort param — bind it to ``actual``.
+    2. Structural: same constructor head — recurse on sub-params.
+    3. Subsort-aware: iterate subsorts ``s ≤ actual`` with same head as ``parametric``,
+       collecting additional candidates for LUB resolution.
+    """
+    if parametric in params:
+        return {parametric: [actual]}
+    if parametric.name == actual.name and len(parametric.params) == len(actual.params):
+        result: dict[KSort, list[KSort]] = {}
+        for p_sub, a_sub in zip(parametric.params, actual.params, strict=True):
+            for k, vs in _match_sort_params(p_sub, a_sub, params, subsorts_fn).items():
+                result.setdefault(k, []).extend(vs)
+        return result
+    if parametric.params and subsorts_fn is not None:
+        result = {}
+        for s in subsorts_fn(actual):
+            if s.name == parametric.name and len(s.params) == len(parametric.params):
+                for p_sub, a_sub in zip(parametric.params, s.params, strict=True):
+                    for k, vs in _match_sort_params(p_sub, a_sub, params).items():
+                        result.setdefault(k, []).extend(vs)
+        return result
+    return {}
+
+
 @final
 @dataclass(frozen=True)
 class KDefinition(KOuter, WithKAtt, Iterable[KFlatModule]):
@@ -1346,6 +1381,8 @@ class KDefinition(KOuter, WithKAtt, Iterable[KFlatModule]):
         match kast:
             case KToken(_, sort) | KVariable(_, sort):
                 return sort
+            case KAs(alias=KVariable(sort=sort)):
+                return sort
             case KRewrite(lhs, rhs):
                 lhs_sort = self.sort(lhs)
                 rhs_sort = self.sort(rhs)
@@ -1355,8 +1392,11 @@ class KDefinition(KOuter, WithKAtt, Iterable[KFlatModule]):
             case KSequence(_):
                 return KSort('K')
             case KApply(label, _):
-                sort, _ = self.resolve_sorts(label)
-                return sort
+                try:
+                    sort, _ = self.resolve_sorts(label)
+                    return sort
+                except (KeyError, ValueError):
+                    return None
             case _:
                 return None
 
@@ -1373,7 +1413,13 @@ class KDefinition(KOuter, WithKAtt, Iterable[KFlatModule]):
         sorts = dict(zip(prod.params, label.params, strict=True))
 
         def resolve(sort: KSort) -> KSort:
-            return sorts.get(sort, sort)
+            # Direct match: sort IS one of the sort parameters.
+            if sort in sorts:
+                return sorts[sort]
+            # Recursive substitution: sort params may appear nested (e.g. MInt{Width} → MInt{8}).
+            if sort.params:
+                return KSort(sort.name, tuple(resolve(p) for p in sort.params))
+            return sort
 
         return resolve(prod.sort), tuple(resolve(sort) for sort in prod.argument_sorts)
 
@@ -1387,6 +1433,34 @@ class KDefinition(KOuter, WithKAtt, Iterable[KFlatModule]):
             return sort1
         # Computing least common supersort is not currently supported if sort1 is not a subsort of sort2 or
         # vice versa. In that case there may be more than one LCS.
+        return None
+
+    def least_upper_bound(self, sorts: Iterable[KSort]) -> KSort | None:
+        """Compute the least upper bound of a set of sorts in the subsort lattice.
+
+        Returns the unique minimal common supersort, or `None` when none exists or the bound is
+        ambiguous (several incomparable minimal upper bounds).  Unlike `least_common_supersort`,
+        this examines the whole lattice rather than only the pairwise subsort relation, so it is
+        order-independent and resolves siblings that share a common supersort (e.g. the LUB of
+        `Int` and `Float` is `Number` when both are subsorts of `Number`).  Mirrors the set-based
+        `AddSortInjections.lub` in the Java frontend.
+        """
+        sort_set = set(sorts)
+        if not sort_set:
+            return None
+        if len(sort_set) == 1:
+            return single(sort_set)
+
+        def is_supersort(upper: KSort, lower: KSort) -> bool:
+            return upper == lower or lower in self.subsorts(upper)
+
+        # Every proper supersort of some sort appears as a key in the subsort table; the sorts
+        # themselves are included to cover a candidate that is already an upper bound of the rest.
+        universe = set(self.subsort_table.keys()) | sort_set
+        upper_bounds = {u for u in universe if all(is_supersort(u, s) for s in sort_set)}
+        minimal = {u for u in upper_bounds if not any(o != u and is_supersort(u, o) for o in upper_bounds)}
+        if len(minimal) == 1:
+            return single(minimal)
         return None
 
     def greatest_common_subsort(self, sort1: KSort, sort2: KSort) -> KSort | None:
@@ -1499,34 +1573,140 @@ class KDefinition(KOuter, WithKAtt, Iterable[KFlatModule]):
 
         return Subst(subst)(new_term)
 
-    # Best-effort addition of sort parameters to klabels, context insensitive
-    def add_sort_params(self, kast: KInner) -> KInner:
-        """Return a given term with the sort parameters on the `KLabel` filled in (which may be missing because of how the frontend works), best effort."""
+    # Best-effort addition of sort parameters to klabels
+    def add_sort_params(self, kast: KInner, sort: KSort | None = None) -> KInner:
+        """Return ``kast`` with missing sort parameters filled in on every parametric ``KLabel``, best effort.
 
-        def _add_sort_params(_k: KInner) -> KInner:
-            if type(_k) is KApply:
-                prod = self.symbols[_k.label.name]
-                if len(_k.label.params) == 0 and len(prod.params) > 0:
-                    sort_dict: dict[KSort, KSort] = {}
-                    for psort, asort in zip(prod.argument_sorts, map(self.sort, _k.args), strict=True):
-                        if asort is None:
-                            _LOGGER.warning(
-                                f'Failed to add sort parameter, unable to determine sort for argument in production: {(prod, psort, asort)}'
-                            )
-                            return _k
-                        if psort in prod.params:
-                            if psort in sort_dict and sort_dict[psort] != asort:
-                                _LOGGER.warning(
-                                    f'Failed to add sort parameter, sort mismatch between different occurances of sort parameter: {(prod, psort, sort_dict[psort], asort)}'
-                                )
-                                return _k
-                            elif psort not in sort_dict:
-                                sort_dict[psort] = asort
-                    if all(p in sort_dict for p in prod.params):
-                        return _k.let(label=KLabel(_k.label.name, [sort_dict[p] for p in prod.params]))
-            return _k
+        The frontend often leaves the sort parameters off a parametric ``KLabel``.  This fills
+        them with a single recursive sweep that threads an *expected* sort downwards — so a
+        parametric **return** sort is taken from its context — and resolves the remaining
+        parameters from the argument sorts coming back up, mirroring ``AddSortInjections`` in the
+        Java frontend.
 
-        return bottom_up(_add_sort_params, kast)
+        ``sort`` is the expected sort of the whole term (e.g. ``GeneratedTopCell`` for a rule
+        body).  When omitted, a fresh sort variable is used at the top, so the algorithm still
+        runs but a parametric return sort that cannot be pinned from context becomes a fresh
+        ``#SortParam{Qn}`` sort variable.
+
+        Each parameter is either *argument-bound* (occurs in some argument sort, resolved
+        bottom-up) or *return-only* (resolved top-down from the expected sort).  ``#SortParam``
+        sentinels act as low-priority placeholders, so a real sort always wins when one is
+        available.  The implementation is one interleaved sweep (``_go``); a future split into
+        explicit passes can reuse the same per-node logic.
+
+        It is asserted that every parametric return sort lives on the "spine" of the term: a
+        return-only parameter is only allowed to stay free when its expected sort is itself free
+        — a concrete expected sort it cannot satisfy means the term is ill-formed.
+        """
+        counter = [0]
+
+        def _fresh() -> KSort:
+            param = KSort(SORT_PARAM_SENTINEL.name, (KSort(f'Q{counter[0]}'),))
+            counter[0] += 1
+            return param
+
+        def _is_sentinel(s: KSort | None) -> bool:
+            return s is not None and s.name == SORT_PARAM_SENTINEL.name
+
+        def _subst_sort(subst: dict[KSort, KSort], s: KSort) -> KSort:
+            if s in subst:
+                return subst[s]
+            if s.params:
+                return KSort(s.name, tuple(_subst_sort(subst, p) for p in s.params))
+            return s
+
+        def _lub(candidates: list[KSort]) -> KSort | None:
+            # Sentinels are placeholders; a real sort always wins (as Java's lub filters out
+            # #SortParam).  Only when every candidate is a sentinel do we keep one.
+            real = [c for c in candidates if not _is_sentinel(c)]
+            if real:
+                return self.least_upper_bound(real)
+            return candidates[0] if candidates else None
+
+        def _go(term: KInner, expected: KSort) -> KInner:
+            if isinstance(term, KRewrite):
+                return KRewrite(_go(term.lhs, expected), _go(term.rhs, expected))
+            if isinstance(term, KAs):
+                return KAs(_go(term.pattern, expected), _go(term.alias, expected))
+            if isinstance(term, KSequence):
+                return KSequence([_go(item, SORT_PARAM_SENTINEL) for item in term.items])
+            if not isinstance(term, KApply):
+                return term
+
+            prod = self.symbols.get(term.label.name)
+            if prod is None:
+                return term
+
+            # Already-applied or non-parametric: thread the expected sort into the children using
+            # the known bindings, then recurse.
+            if len(prod.params) == 0 or len(term.label.params) == len(prod.params):
+                subst = dict(zip(prod.params, term.label.params, strict=True)) if prod.params else {}
+                child_expected = [_subst_sort(subst, asort) for asort in prod.argument_sorts]
+                return term.let(args=[_go(arg, e) for arg, e in zip(term.args, child_expected, strict=True)])
+
+            params = list(prod.params)
+            param_set = frozenset(params)
+
+            # Mirror Java's `fresh`: the parameter that IS the whole result sort takes the
+            # expected sort (so it propagates into the children, sharing one sort variable down
+            # the spine); the rest take a bare sentinel placeholder.  Used to type the children.
+            fresh_subst = {p: (expected if p == prod.sort else SORT_PARAM_SENTINEL) for p in params}
+            child_expected = [_subst_sort(fresh_subst, asort) for asort in prod.argument_sorts]
+            new_args = [_go(arg, e) for arg, e in zip(term.args, child_expected, strict=True)]
+            child_sorts = [self.sort(arg) for arg in new_args]
+
+            # Bottom-up: argument-bound parameters, from the actual child sorts.
+            candidates: dict[KSort, list[KSort]] = {}
+            for psort, asort in zip(prod.argument_sorts, child_sorts, strict=True):
+                if asort is None or _is_sentinel(asort):
+                    continue
+                for k, vs in _match_sort_params(psort, asort, param_set, self.subsorts).items():
+                    candidates.setdefault(k, []).extend(vs)
+
+            # Top-down: return-only parameters, from the expected sort (only when it is concrete).
+            return_only = frozenset(
+                p
+                for p in params
+                if prod.sort.contains(p) and not any(asort.contains(p) for asort in prod.argument_sorts)
+            )
+            if return_only and not _is_sentinel(expected):
+                for k, vs in _match_sort_params(prod.sort, expected, return_only).items():
+                    candidates.setdefault(k, []).extend(vs)
+
+            bindings: dict[KSort, KSort] = {}
+            unsortable: list[KSort] = []
+            for p in params:
+                value = _lub(candidates.get(p, []) + [fresh_subst[p]])
+                if value is None:
+                    _LOGGER.warning(f'Failed to add sort parameter, conflicting sorts for sort parameter: {(prod, p)}')
+                    return term.let(args=new_args)
+                if not _is_sentinel(value) or value.params:
+                    # A concrete sort, or an already-named sort variable propagated from the
+                    # expected sort (e.g. one shared down the spine) — keep it as is.
+                    bindings[p] = value
+                elif any(asort.contains(p) for asort in prod.argument_sorts):
+                    # Bare sentinel for an argument-bound parameter: the argument was unsortable.
+                    unsortable.append(p)
+                else:
+                    # Bare sentinel for a return-only or phantom parameter: a fresh, free sort
+                    # variable.  A return sort is only allowed to stay free on the spine — i.e.
+                    # when its own expected sort is itself free.
+                    assert not prod.sort.contains(p) or _is_sentinel(expected), (
+                        f'parametric return sort {p.name} of {term.label.name!r} occurs off the spine, '
+                        f'in a position expecting concrete sort {expected.name}'
+                    )
+                    bindings[p] = _fresh()
+
+            if unsortable:
+                _LOGGER.warning(
+                    f'Failed to add sort parameter, unable to determine sort for argument: {(prod, unsortable)}'
+                )
+                return term.let(args=new_args)
+
+            label = KLabel(term.label.name, [bindings[p] for p in params])
+            return term.let(label=label, args=new_args)
+
+        return _go(kast, sort if sort is not None else _fresh())
 
     def add_cell_map_items(self, kast: KInner) -> KInner:
         """Wrap cell-map items in the syntactical wrapper that the frontend generates for them.

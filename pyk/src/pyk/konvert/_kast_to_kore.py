@@ -9,7 +9,7 @@ from ..kast.inner import KApply, KLabel, KRewrite, KSequence, KSort, KToken, KVa
 from ..kast.manip import bool_to_ml_pred, extract_lhs, extract_rhs, flatten_label, ml_pred_to_bool, var_occurrences
 from ..kast.outer import KRule
 from ..kast.prelude.bytes import BYTES, pretty_bytes_str
-from ..kast.prelude.k import K_ITEM, K, inj
+from ..kast.prelude.k import K_ITEM, SORT_PARAM_SENTINEL, K, inj
 from ..kast.prelude.kbool import BOOL, TRUE, andBool
 from ..kast.prelude.ml import mlAnd
 from ..kast.prelude.string import STRING, pretty_string
@@ -356,6 +356,18 @@ def _kimport_to_kore(kimport: KImport) -> Import:
 
 
 def _ksort_to_kore(ksort: KSort) -> SortApp:
+    # Emitting the #SortParam sentinel correctly requires a universally-quantified sort variable
+    # bound at the axiom level (a `sortParams({Q0})` attribute, as Java's AddSortInjections does);
+    # this term-level converter has no way to introduce or bind one.  Fail clearly rather than
+    # building the invalid Kore identifier `Sort#SortParam` ('#' is not a legal identifier char).
+    # `startswith` covers the whole sentinel family (e.g. a future `#SortParam{Q0}`).  The full
+    # design is in pyk/docs/2026-06-01-sortparam-kore-emission.md.
+    if ksort.name.startswith(SORT_PARAM_SENTINEL.name):
+        raise ValueError(
+            f'Cannot emit the {SORT_PARAM_SENTINEL.name} sentinel sort to Kore: it marks an ML-predicate '
+            'result sort that add_sort_params could not infer and that must become an axiom-level '
+            'sort variable. This is not yet implemented; see pyk/docs/2026-06-01-sortparam-kore-emission.md.'
+        )
     return SortApp('Sort' + ksort.name)
 
 

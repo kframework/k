@@ -51,6 +51,10 @@ class KSort(KAst):
         params = params if params is not None else self.params
         return KSort(name=name, params=params)
 
+    def contains(self, sort: KSort) -> bool:
+        """Return whether ``sort`` appears anywhere in this sort's parameter tree (including itself)."""
+        return self == sort or any(param.contains(sort) for param in self.params)
+
 
 @final
 @dataclass(frozen=True)
