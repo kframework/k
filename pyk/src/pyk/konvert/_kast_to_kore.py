@@ -25,6 +25,7 @@ from ..kore.syntax import (
     EVar,
     Implies,
     Import,
+    In,
     MLPattern,
     MLQuant,
     Module,
@@ -280,7 +281,14 @@ def krule_to_kore(definition: KDefinition, krule: KRule) -> Axiom:
             else And(top_level_kore_sort, [kore_rhs_body] + kore_rhs_constraints)
         )
         kore_axiom = Rewrites(sort=top_level_kore_sort, left=kore_lhs, right=kore_rhs)
-    else:
+    elif Atts.SIMPLIFICATION in krule.att:
+        # Canonical shape of a simplification equation
+        # \implies(
+        #   requires,
+        #   \equals(
+        #     lhs,
+        #     \and(rhs, ensures)
+        # )
         axiom_sort = SortVar('R')
         axiom_vars = (axiom_sort,)
         kast_lhs_constraints_bool = [
@@ -304,6 +312,58 @@ def krule_to_kore(definition: KDefinition, krule: KRule) -> Axiom:
             top_level_kore_sort, axiom_sort, kore_lhs_body, And(top_level_kore_sort, [kore_rhs_body, kore_ensures])
         )
         kore_axiom = Implies(axiom_sort, kore_antecedent, kore_consequent)
+    else:  # i.e., is_functional and not a simplification
+        # canonical shape of a function equation (not simplification!)
+        # \implies(
+        #   \and(requires, argument_predicates),
+        #   \equals(lhs_with_args_replaced, \and(rhs, ensures))
+        # )
+        # arg.predicates are \and chains of \in(VAR, ARG) ending in \top
+        # the actual arg.s are replaced by VAR_1..n in the LHS's function application
+        # requires and ensures are \\top if empty or \and-ed \equals(.., \dv("true"))
+        axiom_sort = SortVar('R')
+        axiom_vars = (axiom_sort,)
+        kast_lhs_constraints_bool = [
+            ml_pred_to_bool(kast_lhs_constraint) for kast_lhs_constraint in kast_lhs_constraints
+        ]
+        assert isinstance(kast_lhs_body, KApply)
+        kore_requires_antecedent: Pattern = Top(top_level_kore_sort)
+        if kast_lhs_constraints_bool is not None:
+            kore_requires_antecedent = Equals(
+                KORE_BOOL,
+                axiom_sort,
+                kast_to_kore(definition, andBool(kast_lhs_constraints_bool), sort=BOOL),
+                KORE_TRUE,
+            )
+        # make argument predicates
+        if not kast_lhs_body.args:
+            kore_fct_antecedent: Pattern = kore_requires_antecedent
+        else:
+            kore_arg_predicates, new_kore_app = _mangle_app(definition, top_level_kore_sort, kast_lhs_body)
+            kore_fct_antecedent = And(
+                axiom_sort,
+                (
+                    kore_requires_antecedent,
+                    kore_arg_predicates,
+                ),
+            )
+            kore_lhs_body = new_kore_app
+
+        kore_ensures = Top(top_level_kore_sort)
+        if kast_rhs_constraints:
+            kast_rhs_constraints_bool = [
+                ml_pred_to_bool(kast_rhs_constraint) for kast_rhs_constraint in kast_rhs_constraints
+            ]
+            kore_ensures = Equals(
+                KORE_BOOL,
+                top_level_kore_sort,
+                kast_to_kore(definition, andBool(kast_rhs_constraints_bool), sort=BOOL),
+                KORE_TRUE,
+            )
+        kore_consequent = Equals(
+            top_level_kore_sort, axiom_sort, kore_lhs_body, And(top_level_kore_sort, [kore_rhs_body, kore_ensures])
+        )
+        kore_axiom = Implies(axiom_sort, kore_fct_antecedent, kore_consequent)
 
     # Make adjustments to Rule attributes
     att = krule.att.discard([Atts.PRODUCTION, Atts.UNIQUE_ID, Atts.SOURCE, Atts.LOCATION])
@@ -320,6 +380,34 @@ def krule_to_kore(definition: KDefinition, krule: KRule) -> Axiom:
     ]
 
     return Axiom(vars=axiom_vars, pattern=kore_axiom, attrs=attrs)
+
+
+def _mangle_app(definition: KDefinition, sort: Sort, app: KApply) -> tuple[Pattern, Pattern]:
+
+    ksorts = _argument_sorts(definition, app)
+    assert len(ksorts) == len(app.args)
+    var_names = [f'F-ARG-{i}' for i in range(1, 42)]  # arbitrary limit
+    assert len(ksorts) <= len(var_names)  # fail if too many arguments
+
+    preds = [
+        In(
+            _ksort_to_kore(ksort),
+            sort,
+            EVar(name, _ksort_to_kore(ksort)),
+            kast_to_kore(definition, arg, ksort),
+        )
+        for (arg, ksort, name) in zip(app.args, ksorts, var_names, strict=False)
+    ]
+
+    new_app = kast_to_kore(
+        definition,
+        KApply(
+            app.label,
+            [KVariable(name, sort) for (sort, name) in zip(ksorts, var_names, strict=False)],
+        ),
+    )
+
+    return (And(sort, preds), new_app)
 
 
 def kflatmodule_to_kore(definition: KDefinition, kflatmodule: KFlatModule) -> Module:

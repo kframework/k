@@ -591,11 +591,11 @@ KRULE_TO_KORE_DATA: Final = (
     ),
     (
         'SIMPLE-PROOFS.simple-func',
-        r"""axiom{R} \implies{R}(\equals{SortBool{}, R}(\dv{SortBool{}}("true"), \dv{SortBool{}}("true")), \equals{SortInt{}, R}(LblsimpleFunc{}(), \and{SortInt{}}(\dv{SortInt{}}("3"), \top{SortInt{}}()))) [label{}("SIMPLE-PROOFS.simple-func"), priority{}("50")]""",
+        r"""axiom{R} \implies{R}(\and{R}(\top{R}(), \top{R}()), \equals{SortInt{}, R}(LblsimpleFunc{}(), \and{SortInt{}}(\dv{SortInt{}}("3"), \top{SortInt{}}()))) [label{}("SIMPLE-PROOFS.simple-func"), priority{}("50")]""",
     ),
     (
         'SIMPLE-PROOFS.simple-func-req-1',
-        r"""axiom{R} \implies{R}(\equals{SortBool{}, R}(Lbl'Unds-LT-Eqls'Int'Unds'{}(VarX : SortInt{}, \dv{SortInt{}}("0")), \dv{SortBool{}}("true")), \equals{SortInt{}, R}(LblleqZero{}(VarX : SortInt{}), \and{SortInt{}}(\dv{SortInt{}}("0"), \top{SortInt{}}()))) [label{}("SIMPLE-PROOFS.simple-func-req-1"), priority{}("50")]""",
+        r"""axiom{R} \implies{R}(\and{R}(\equals{SortBool{}, R}(Lbl'Unds-LT-Eqls'Int'Unds'{}(VarX:SortInt{}, \dv{SortInt{}}("0")), \dv{SortBool{}}("true")), \and{R}(\in{SortInt{}, R}(X0:SortInt{}, VarX:SortInt{}), \top{R}())), \equals{SortInt{},R}(LblleqZero{}(X0:SortInt{}), \and{SortInt{}}(\dv{SortInt{}}("0"), \top{SortInt{}}()))) [label{}("SIMPLE-PROOFS.simple-func-req-1"), priority{}("50")]""",
     ),
     (
         'SIMPLE-PROOFS.simple-func-simplification',
