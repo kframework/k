@@ -414,19 +414,19 @@ module MAP-KORE-SYMBOLIC [symbolic,haskell]
 
   // Adding the definedness condition `notBool (K in_keys(M))` in the ensures clause of the following rule would be redundant
   // because K also appears in the rhs, preserving the case when it's #Bottom.
-  rule (K |-> _ M:Map) [ K <- V ] => (K |-> V M) [simplification]
-  rule M:Map [ K <- V ] => (K |-> V M) requires notBool (K in_keys(M)) [simplification]
+  rule (K |-> _ M:Map) [ K <- V ] => (K |-> V M) [simplification, preserves-definedness]
+  rule M:Map [ K <- V ] => (K |-> V M) requires notBool (K in_keys(M)) [simplification, preserves-definedness]
   rule M:Map [ K <- _ ] [ K <- V ] => M [ K <- V ] [simplification]
   // Adding the definedness condition `notBool (K1 in_keys(M))` in the ensures clause of the following rule would be redundant
   // because K1 also appears in the rhs, preserving the case when it's #Bottom.
-  rule (K1 |-> V1 M:Map) [ K2 <- V2 ] => (K1 |-> V1 (M [ K2 <- V2 ])) requires K1 =/=K K2 [simplification]
+  rule (K1 |-> V1 M:Map) [ K2 <- V2 ] => (K1 |-> V1 (M [ K2 <- V2 ])) requires K1 =/=K K2 [simplification, preserves-definedness]
 
   // Symbolic remove
   rule (K |-> _ M:Map) [ K <- undef ] => M ensures notBool (K in_keys(M)) [simplification]
   rule M:Map [ K <- undef ] => M requires notBool (K in_keys(M)) [simplification]
   // Adding the definedness condition `notBool (K1 in_keys(M))` in the ensures clause of the following rule would be redundant
   // because K1 also appears in the rhs, preserving the case when it's #Bottom.
-  rule (K1 |-> V1 M:Map) [ K2 <- undef ] => (K1 |-> V1 (M [ K2 <- undef ])) requires K1 =/=K K2 [simplification]
+  rule (K1 |-> V1 M:Map) [ K2 <- undef ] => (K1 |-> V1 (M [ K2 <- undef ])) requires K1 =/=K K2 [simplification, preserves-definedness]
 
   // Symbolic lookup
   rule (K  |->  V M:Map) [ K ]  => V ensures notBool (K in_keys(M)) [simplification]
@@ -854,8 +854,7 @@ module SET-KORE-SYMBOLIC [symbolic,haskell]
   rule S    |Set .Set => S    [simplification, comm]
   rule S    |Set S    => S    [simplification]
 
-  rule (S SetItem(X)) |Set SetItem(X) => S SetItem(X)
-                             ensures notBool (X in S) [simplification, comm]
+  rule (S SetItem(X)) |Set SetItem(X) => S SetItem(X) [simplification, comm, preserves-definedness]
   // Currently disabled, see runtimeverification/haskell-backend#3301
   // rule (S SetItem(X)) |Set S          => S SetItem(X)
   //                            ensures notBool (X in S) [simplification, comm]
@@ -1167,7 +1166,7 @@ operations listed above.
   rule _:Bool impliesBool true => true       [simplification]
   rule B:Bool impliesBool false => notBool B [simplification]
 
-  rule B1:Bool =/=Bool B2:Bool => notBool (B1 ==Bool B2)
+  rule B1:Bool =/=Bool B2:Bool => notBool (B1 ==Bool B2) [priority(10)]
 endmodule
 
 module BOOL-KORE [symbolic]
@@ -1373,8 +1372,8 @@ module INT-SYMBOLIC [symbolic]
   rule I +Int 0 => I [simplification]
   rule I -Int 0 => I [simplification]
 
-  rule X modInt N => X requires 0 <=Int X andBool X <Int N [simplification]
-  rule X   %Int N => X requires 0 <=Int X andBool X <Int N [simplification]
+  rule X modInt N => X requires 0 <=Int X andBool X <Int N [simplification, preserves-definedness]
+  rule X   %Int N => X requires 0 <=Int X andBool X <Int N [simplification, preserves-definedness]
 
   // Bit-shifts
   rule X <<Int 0 => X                    [simplification, preserves-definedness]
@@ -1436,22 +1435,23 @@ module INT
   imports private BOOL
 
   rule bitRangeInt(I::Int, IDX::Int, LEN::Int) => (I >>Int IDX) modInt (1 <<Int LEN)
+    requires 0 <=Int IDX andBool 0 <=Int LEN [preserves-definedness]
 
   rule signExtendBitRangeInt(I::Int, IDX::Int, LEN::Int) => (bitRangeInt(I, IDX, LEN) +Int (1 <<Int (LEN -Int 1))) modInt (1 <<Int LEN) -Int (1 <<Int (LEN -Int 1))
+    requires 0 <=Int IDX andBool 0 <Int LEN [preserves-definedness]
 
   rule I1:Int divInt I2:Int => (I1 -Int (I1 modInt I2)) /Int I2
-  requires I2 =/=Int 0
-  rule
-    I1:Int modInt I2:Int
-  =>
-    ((I1 %Int absInt(I2)) +Int absInt(I2)) %Int absInt(I2)
-  requires I2 =/=Int 0    [concrete, simplification]
+    requires I2 =/=Int 0 [preserves-definedness]
+
+  rule I1:Int modInt I2:Int => ((I1 %Int absInt(I2)) +Int absInt(I2)) %Int absInt(I2)
+    requires I2 =/=Int 0 [concrete, simplification, preserves-definedness]
 
   rule minInt(I1:Int, I2:Int) => I1 requires I1 <Int  I2
   rule minInt(I1:Int, I2:Int) => I2 requires I1 >=Int I2
 
-  rule I1:Int =/=Int I2:Int => notBool (I1 ==Int I2)
-  rule (I1:Int dividesInt I2:Int) => (I2 %Int I1) ==Int 0
+  rule (I1:Int dividesInt I2:Int) => (I2 %Int I1) ==Int 0 requires notBool (I1 ==Int 0) [preserves-definedness]
+
+  rule I1:Int =/=Int I2:Int => notBool (I1 ==Int I2) [priority(10)]
 
   syntax Int ::= freshInt(Int)    [freshGenerator, function, total, private]
   rule freshInt(I:Int) => I
@@ -1645,7 +1645,7 @@ IEEE 754 arithmetic. `0.0 ==Float -0.0` is also true.
                 | Float "==Float" Float       [function, comm, smt-hook(fp.eq), hook(FLOAT.eq), symbol(_==Float_)]
                 | Float "=/=Float" Float      [function, comm, smt-hook((not (fp.eq #1 #2)))]
 
-  rule F1:Float =/=Float F2:Float => notBool (F1 ==Float F2)
+  rule F1:Float =/=Float F2:Float => notBool (F1 ==Float F2) [priority(10)]
 ```
 
 ### Conversion between integer and float
@@ -1864,7 +1864,8 @@ another according to the natural lexicographic ordering of strings.
 ```k
   syntax Bool ::= String "==String" String  [function, total, comm, hook(STRING.eq)]
                 | String "=/=String" String [function, total, comm, hook(STRING.ne)]
-  rule S1:String =/=String S2:String => notBool (S1 ==String S2)
+
+  rule S1:String =/=String S2:String => notBool (S1 ==String S2) [priority(10)]
 
   syntax Bool ::= String  "<String" String [function, total, hook(STRING.lt)]
                 | String "<=String" String [function, total, hook(STRING.le)]
@@ -2352,7 +2353,7 @@ module K-EQUAL
   imports K-EQUAL-SYNTAX
   imports K-EQUAL-KORE
 
-  rule K1:K =/=K K2:K => notBool (K1 ==K K2)
+  rule K1:K =/=K K2:K => notBool (K1 ==K K2) [priority(10)]
 
   rule #if C:Bool #then B1::K #else _ #fi => B1 requires C
   rule #if C:Bool #then _ #else B2::K #fi => B2 requires notBool C
