@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar, final
 
 from ..cterm import CTerm
 from ..kast.inner import KApply, KSequence, KToken, KVariable, bottom_up_with_summary
-from .kcfg import KCFG
+from .kcfg import KCFG, NodeVariant
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,11 +39,17 @@ class OptimizedNodeStore(MutableMapping[int, KCFG.Node]):
         return self._nodes[key]
 
     def __setitem__(self, key: int, node: KCFG.Node) -> None:
-        old_cterm = node.cterm
-        new_config = self._optimize(old_cterm.config)
-        new_constraints = tuple(self._optimize(c) for c in old_cterm.constraints)
-        new_node = KCFG.Node(node.id, CTerm(new_config, new_constraints), attrs=node.attrs)
+        # Term-dedup the canonical cterm and every variant cterm, carrying the provenance chain
+        # through unchanged (variants must survive the store).
+        new_variants = tuple(
+            NodeVariant(variant.producer, variant.request_id, self._optimize_cterm(variant.cterm))
+            for variant in node.variants
+        )
+        new_node = KCFG.Node(node.id, self._optimize_cterm(node.cterm), attrs=node.attrs, variants=new_variants)
         self._nodes[key] = new_node
+
+    def _optimize_cterm(self, cterm: CTerm) -> CTerm:
+        return CTerm(self._optimize(cterm.config), tuple(self._optimize(c) for c in cterm.constraints))
 
     def __delitem__(self, key: int) -> None:
         del self._nodes[key]

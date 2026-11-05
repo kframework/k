@@ -5,6 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Container
 from dataclasses import dataclass, field
+from enum import Enum
 from threading import RLock
 from typing import TYPE_CHECKING, Final, List, Union, cast, final
 
@@ -49,10 +50,96 @@ class NodeAttr:
 class KCFGNodeAttr(NodeAttr):
     VACUOUS = NodeAttr('vacuous')
     STUCK = NodeAttr('stuck')
+    # Recover-mode bookkeeping (inert outside recover-mode):
+    BOOSTER_TRIED = NodeAttr('booster-tried')  # a booster `try` made no progress on the current term
+    KORE_TRIED = NodeAttr('kore-tried')  # a kore `try` made no progress on the current term
+    SUBSUME_INDETERMINATE = NodeAttr('subsume-indeterminate')  # last booster subsumption was indeterminate
+    BOTH_BACKENDS_FAILED = NodeAttr('both-backends-failed')  # terminal: neither backend could advance the node
+
+
+class Producer(Enum):
+    """How a node's term was produced — the basis for a node's recover-mode 'rung'.
+
+    ``INIT`` is the original term; ``BOOSTER_SIMPLIFY`` / ``KORE_SIMPLIFY`` record a
+    re-simplification that produced a new term (booster-only, then kore-enabled).
+    """
+
+    INIT = 'init'
+    BOOSTER_SIMPLIFY = 'simplified-booster'
+    KORE_SIMPLIFY = 'simplified-booster-kore'
+
+
+@final
+@dataclass(frozen=True)
+class NodeVariant:
+    """One entry in a node's simplification-provenance chain (`KCFG.Node.variants`).
+
+    Records the term produced by a simplification step and the producer + JSON-RPC ``request_id``
+    that produced it.  The chain is flat (least→most simplified) with the canonical term last.
+    """
+
+    producer: Producer
+    request_id: str | None  # the simplify RPC that produced this cterm; None for INIT
+    cterm: CTerm
+
+    def to_dict(self) -> dict[str, Any]:
+        return {'producer': self.producer.value, 'request_id': self.request_id, 'cterm': self.cterm.to_dict()}
+
+    @staticmethod
+    def from_dict(dct: dict[str, Any]) -> NodeVariant:
+        return NodeVariant(Producer(dct['producer']), dct.get('request_id'), CTerm.from_dict(dct['cterm']))
+
+
+class HandoffFlavour(Enum):
+    """Which kore operation performed a `KoreHandoff` — an execute step or an implies (subsumption)."""
+
+    EXECUTE = 'execute'
+    IMPLIES = 'implies'
+
+
+@final
+@dataclass(frozen=True)
+class KoreHandoff:
+    """Record an operation-level kore handoff (execute or implies) where kore advanced the proof.
+
+    Lets the diagnostic find every kore handoff without scanning logs.  ``request_id`` is the join
+    key onto the per-request log file the configured ``haskell_log_dir`` writes for that request.
+    For ``execute``, ``source``/``target`` are the lhs/rhs node ids; for ``implies``, ``source`` is
+    the node and ``target`` the subsumption target.
+    """
+
+    source: int
+    target: int
+    flavour: HandoffFlavour
+    request_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            'source': self.source,
+            'target': self.target,
+            'flavour': self.flavour.value,
+            'request_id': self.request_id,
+        }
+
+    @staticmethod
+    def from_dict(dct: dict[str, Any]) -> KoreHandoff:
+        return KoreHandoff(dct['source'], dct['target'], HandoffFlavour(dct['flavour']), dct['request_id'])
 
 
 class KCFGStore:
     store_path: Path
+
+    # Node attributes persisted as top-level side-lists in `kcfg.json` (node files only carry
+    # `cterm`/`variants`; `read_cfg_data` rebuilds `attrs` from these).  Keep this the single source
+    # of truth so adding a persisted attr is a one-line change.
+    _ATTR_SIDE_LISTS: Final = {
+        'vacuous': KCFGNodeAttr.VACUOUS,
+        'stuck': KCFGNodeAttr.STUCK,
+        'booster_tried': KCFGNodeAttr.BOOSTER_TRIED,
+        'kore_tried': KCFGNodeAttr.KORE_TRIED,
+        'subsume_indeterminate': KCFGNodeAttr.SUBSUME_INDETERMINATE,
+        'both_backends_failed': KCFGNodeAttr.BOTH_BACKENDS_FAILED,
+    }
 
     def __init__(self, store_path: Path) -> None:
         self.store_path = store_path
@@ -73,12 +160,8 @@ class KCFGStore:
     def write_cfg_data(
         self, kcfg: KCFG, dct: dict[str, Any], deleted_nodes: Iterable[int] = (), created_nodes: Iterable[int] = ()
     ) -> None:
-        vacuous_nodes = [
-            node_id for node_id in kcfg._nodes.keys() if KCFGNodeAttr.VACUOUS in kcfg._nodes[node_id].attrs
-        ]
-        stuck_nodes = [node_id for node_id in kcfg._nodes.keys() if KCFGNodeAttr.STUCK in kcfg._nodes[node_id].attrs]
-        dct['vacuous'] = vacuous_nodes
-        dct['stuck'] = stuck_nodes
+        for key, attr in self._ATTR_SIDE_LISTS.items():
+            dct[key] = [node_id for node_id in kcfg._nodes.keys() if attr in kcfg._nodes[node_id].attrs]
         for node_id in deleted_nodes:
             self.kcfg_node_path(node_id).unlink(missing_ok=True)
         for node_id in created_nodes:
@@ -88,21 +171,22 @@ class KCFGStore:
     def read_cfg_data(self) -> dict[str, Any]:
         dct = json.loads(self.kcfg_json_path.read_text())
         nodes = [self.read_node_data(node_id) for node_id in dct.get('nodes') or []]
-        dct['nodes'] = nodes
 
         new_nodes = []
-        for node in dct['nodes']:
-            attrs = []
-            if node['id'] in dct['vacuous']:
-                attrs.append(KCFGNodeAttr.VACUOUS.value)
-            if node['id'] in dct['stuck']:
-                attrs.append(KCFGNodeAttr.STUCK.value)
-            new_nodes.append({'id': node['id'], 'cterm': node['cterm'], 'attrs': attrs})
+        for node in nodes:
+            # Rebuild attrs from the side-lists; carry `variants` through from the node file
+            # (`KCFG.Node.from_dict` ignores it if absent).  `dct.get` keeps old stores (which lack
+            # the new keys) loadable.
+            attrs = [attr.value for key, attr in self._ATTR_SIDE_LISTS.items() if node['id'] in (dct.get(key) or [])]
+            new_node: dict[str, Any] = {'id': node['id'], 'cterm': node['cterm'], 'attrs': attrs}
+            if 'variants' in node:
+                new_node['variants'] = node['variants']
+            new_nodes.append(new_node)
 
         dct['nodes'] = new_nodes
 
-        del dct['vacuous']
-        del dct['stuck']
+        for key in self._ATTR_SIDE_LISTS:
+            dct.pop(key, None)
 
         return dct
 
@@ -117,34 +201,61 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
         id: int
         cterm: CTerm
         attrs: frozenset[NodeAttr]
+        # Simplification-provenance chain, least→most simplified, canonical term last; `()` == no
+        # recorded history (back-compat default).  `compare=False` excludes it from the dataclass's
+        # generated eq/order/hash, so node identity is unchanged — `cterm` already reflects the
+        # canonical term, and the rest of the system stays oblivious to `variants`.
+        variants: tuple[NodeVariant, ...] = field(default=(), compare=False)
 
-        def __init__(self, id: int, cterm: CTerm, attrs: Iterable[NodeAttr] = ()) -> None:
+        def __init__(
+            self, id: int, cterm: CTerm, attrs: Iterable[NodeAttr] = (), variants: Iterable[NodeVariant] = ()
+        ) -> None:
             object.__setattr__(self, 'id', id)
             object.__setattr__(self, 'cterm', cterm)
             object.__setattr__(self, 'attrs', frozenset(attrs))
+            object.__setattr__(self, 'variants', tuple(variants))
 
         def to_dict(self) -> dict[str, Any]:
-            return {'id': self.id, 'cterm': self.cterm.to_dict(), 'attrs': [attr.value for attr in self.attrs]}
+            dct: dict[str, Any] = {
+                'id': self.id,
+                'cterm': self.cterm.to_dict(),
+                'attrs': [attr.value for attr in self.attrs],
+            }
+            # Omitted when empty so variant-less nodes serialise byte-identically to before.
+            if self.variants:
+                dct['variants'] = [variant.to_dict() for variant in self.variants]
+            return dct
 
         @staticmethod
         def from_dict(dct: dict[str, Any]) -> KCFG.Node:
-            return KCFG.Node(dct['id'], CTerm.from_dict(dct['cterm']), [NodeAttr(attr) for attr in dct['attrs']])
+            return KCFG.Node(
+                dct['id'],
+                CTerm.from_dict(dct['cterm']),
+                [NodeAttr(attr) for attr in dct['attrs']],
+                [NodeVariant.from_dict(v) for v in dct.get('variants', ())],
+            )
 
         def add_attr(self, attr: NodeAttr) -> KCFG.Node:
-            return KCFG.Node(self.id, self.cterm, list(self.attrs) + [attr])
+            return KCFG.Node(self.id, self.cterm, list(self.attrs) + [attr], self.variants)
 
         def remove_attr(self, attr: NodeAttr) -> KCFG.Node:
             if attr not in self.attrs:
                 raise ValueError(f'Node {self.id} does not have attribute {attr.value}')
-            return KCFG.Node(self.id, self.cterm, self.attrs.difference([attr]))
+            return KCFG.Node(self.id, self.cterm, self.attrs.difference([attr]), self.variants)
 
         def discard_attr(self, attr: NodeAttr) -> KCFG.Node:
-            return KCFG.Node(self.id, self.cterm, self.attrs.difference([attr]))
+            return KCFG.Node(self.id, self.cterm, self.attrs.difference([attr]), self.variants)
 
-        def let(self, cterm: CTerm | None = None, attrs: Iterable[KCFGNodeAttr] | None = None) -> KCFG.Node:
+        def let(
+            self,
+            cterm: CTerm | None = None,
+            attrs: Iterable[KCFGNodeAttr] | None = None,
+            variants: Iterable[NodeVariant] | None = None,
+        ) -> KCFG.Node:
             new_cterm = cterm if cterm is not None else self.cterm
             new_attrs = attrs if attrs is not None else self.attrs
-            return KCFG.Node(self.id, new_cterm, new_attrs)
+            new_variants = variants if variants is not None else self.variants
+            return KCFG.Node(self.id, new_cterm, new_attrs, new_variants)
 
         @property
         def free_vars(self) -> frozenset[str]:
@@ -439,6 +550,8 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
     _aliases: dict[str, int]
     _lock: RLock
 
+    _kore_handoffs: list[KoreHandoff]
+
     _kcfg_store: KCFGStore | None
 
     def __init__(self, cfg_dir: Path | None = None, optimize_memory: bool = True) -> None:
@@ -458,6 +571,7 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
         self._ndbranches = {}
         self._aliases = {}
         self._lock = RLock()
+        self._kore_handoffs = []
         if cfg_dir is not None:
             self._kcfg_store = KCFGStore(cfg_dir)
 
@@ -638,6 +752,7 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
             'splits': splits,
             'ndbranches': ndbranches,
             'aliases': aliases,
+            'kore_handoffs': [handoff.to_dict() for handoff in self._kore_handoffs],
         }
         return {k: v for k, v in res.items() if v}
 
@@ -660,6 +775,7 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
             'splits': splits,
             'ndbranches': ndbranches,
             'aliases': aliases,
+            'kore_handoffs': [handoff.to_dict() for handoff in self._kore_handoffs],
         }
         return {k: v for k, v in res.items() if v}
 
@@ -696,6 +812,9 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
 
         for alias, node_id in dct.get('aliases', {}).items():
             cfg.add_alias(alias=alias, node_id=node_id)
+
+        for handoff_dict in dct.get('kore_handoffs') or []:
+            cfg.add_kore_handoff(KoreHandoff.from_dict(handoff_dict))
 
         return cfg
 
@@ -855,6 +974,36 @@ class KCFG(Container[Union['KCFG.Node', 'KCFG.Successor']]):
         node = self.node(node_id)
         new_node = node.let(cterm=cterm, attrs=attrs)
         self.replace_node(new_node)
+
+    def add_variant(
+        self,
+        node_id: NodeIdLike,
+        producer: Producer,
+        cterm: CTerm,
+        request_id: str | None = None,
+    ) -> KCFG.Node:
+        """Append a simplification variant to a node and make its term canonical.
+
+        Non-destructive provenance: the node's ``cterm`` is updated to the most-simplified term
+        (so downstream readers see it transparently) while ``variants`` records the full chain.
+        On the first variant the original term is seeded as an ``INIT`` entry, so the chain is
+        self-contained (``variants[i-1].cterm`` → ``variants[i].cterm`` is always a real step).
+
+        Exposed publicly so downstream (e.g. kevm-pyk init/target pre-simplification) can drive it.
+        """
+        node = self.node(node_id)
+        chain = node.variants if node.variants else (NodeVariant(Producer.INIT, None, node.cterm),)
+        new_variants = chain + (NodeVariant(producer, request_id, cterm),)
+        new_node = node.let(cterm=cterm, variants=new_variants)
+        self.replace_node(new_node)
+        return new_node
+
+    @property
+    def kore_handoffs(self) -> list[KoreHandoff]:
+        return list(self._kore_handoffs)
+
+    def add_kore_handoff(self, handoff: KoreHandoff) -> None:
+        self._kore_handoffs.append(handoff)
 
     def replace_node(self, node: KCFG.Node) -> None:
         self._nodes[node.id] = node
@@ -1318,6 +1467,17 @@ class Vacuous(KCFGExtendResult): ...
 @final
 @dataclass(frozen=True)
 class Stuck(KCFGExtendResult): ...
+
+
+@final
+@dataclass(frozen=True)
+class NoProgress(KCFGExtendResult):
+    """The backend made no progress on a node, without judging it stuck.
+
+    Emitted by ``KCFGExplore.extend_cterm`` in place of ``Stuck`` so the *decision* of whether a
+    no-progress node is terminal stays with the proof coordinator (``APRProof.commit``), which has
+    the full node context.  Never applied by ``KCFG.extend`` — the coordinator intercepts it.
+    """
 
 
 @final

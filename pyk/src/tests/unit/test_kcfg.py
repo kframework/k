@@ -14,7 +14,7 @@ from pyk.kast.prelude.ml import mlEquals, mlTop
 from pyk.kast.prelude.utils import token
 from pyk.kast.pretty import PrettyPrinter
 from pyk.kcfg import KCFG, KCFGShow
-from pyk.kcfg.kcfg import KCFGNodeAttr
+from pyk.kcfg.kcfg import KCFGNodeAttr, NodeVariant, Producer
 from pyk.kcfg.show import NodePrinter
 from pyk.utils import not_none, single
 
@@ -250,6 +250,93 @@ def test_create_node() -> None:
     assert new_node == node(1)
     assert set(cfg.nodes) == {node(1)}
     assert not cfg.is_stuck(new_node.id)
+
+
+_NODE_ROUNDTRIP_DATA: tuple[tuple[str, KCFG.Node], ...] = (
+    ('bare', KCFG.Node(1, term(1))),
+    (
+        'with-variants',
+        KCFG.Node(
+            1,
+            term(2),
+            variants=[
+                NodeVariant(Producer.INIT, None, term(1)),
+                NodeVariant(Producer.BOOSTER_SIMPLIFY, 'r-1', term(2)),
+            ],
+        ),
+    ),
+    ('with-attrs', KCFG.Node(1, term(1), attrs=[KCFGNodeAttr.BOOSTER_TRIED, KCFGNodeAttr.SUBSUME_INDETERMINATE])),
+)
+
+
+@pytest.mark.parametrize('test_id,node', _NODE_ROUNDTRIP_DATA, ids=[d[0] for d in _NODE_ROUNDTRIP_DATA])
+def test_node_serialisation_roundtrip(test_id: str, node: KCFG.Node) -> None:
+    # Node.to_dict/from_dict round-trips attrs and the variant chain; node equality ignores variants,
+    # so the chain is compared explicitly.
+    restored = KCFG.Node.from_dict(node.to_dict())
+    assert restored == node
+    assert restored.variants == node.variants
+
+
+def test_serialisation_omits_empty_recover_keys() -> None:
+    # Additive/back-compat: recover-mode keys are absent when empty, so legacy readers are unaffected.
+    assert 'variants' not in KCFG.Node(1, term(1)).to_dict()
+    cfg = KCFG()
+    cfg.create_node(term(1))
+    assert 'kore_handoffs' not in cfg.to_dict()
+    assert 'kore_handoffs' not in cfg.to_dict_no_nodes()
+
+
+def test_add_variant_chains_and_updates_cterm() -> None:
+    # Given a fresh node at rung 0
+    cfg = KCFG()
+    n = cfg.create_node(term(1))
+
+    # When a booster-simplify variant is appended
+    cfg.add_variant(n.id, Producer.BOOSTER_SIMPLIFY, term(2), request_id='claim-001')
+    updated = cfg.node(n.id)
+
+    # Then the canonical cterm advances and the chain seeds INIT then records the step
+    assert updated.cterm == term(2)
+    assert [v.producer for v in updated.variants] == [Producer.INIT, Producer.BOOSTER_SIMPLIFY]
+    assert updated.variants[0].cterm == term(1)
+    assert updated.variants[-1].cterm == term(2)
+    assert updated.variants[-1].request_id == 'claim-001'
+
+    # When a second (kore-simplify) variant is appended, INIT is not re-seeded
+    cfg.add_variant(n.id, Producer.KORE_SIMPLIFY, term(3), request_id='claim-002')
+    updated = cfg.node(n.id)
+    assert updated.cterm == term(3)
+    assert [v.producer for v in updated.variants] == [
+        Producer.INIT,
+        Producer.BOOSTER_SIMPLIFY,
+        Producer.KORE_SIMPLIFY,
+    ]
+
+
+def test_node_equality_ignores_variants() -> None:
+    # Given two nodes identical but for their variant chains
+    bare = KCFG.Node(1, term(1))
+    with_variants = KCFG.Node(1, term(1), variants=[NodeVariant(Producer.INIT, None, term(1))])
+
+    # Then they compare equal and hash equal (variants is metadata)
+    assert bare == with_variants
+    assert hash(bare) == hash(with_variants)
+
+
+def test_kore_handoffs_add_and_roundtrip() -> None:
+    from pyk.kcfg.kcfg import HandoffFlavour, KoreHandoff
+
+    # Given a kcfg with two recorded handoffs
+    cfg = KCFG()
+    cfg.create_node(term(1))
+    cfg.add_kore_handoff(KoreHandoff(source=1, target=2, flavour=HandoffFlavour.EXECUTE, request_id='claim-003'))
+    cfg.add_kore_handoff(KoreHandoff(source=2, target=2, flavour=HandoffFlavour.IMPLIES, request_id='claim-004'))
+
+    # Then the accessor returns them and they round-trip through to_dict/from_dict
+    assert len(cfg.kore_handoffs) == 2
+    restored = KCFG.from_dict(cfg.to_dict())
+    assert restored.kore_handoffs == cfg.kore_handoffs
 
 
 def test_remove_unknown_node() -> None:

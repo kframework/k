@@ -487,6 +487,24 @@ class SmtSolverError(KoreClientError):
 
 @final
 @dataclass
+class AbortedError(KoreClientError):
+    """A backend engine aborted the request because it could not decide it (JSON-RPC ``code: 6``).
+
+    The backend raises this when a request carried something the engine does not know how to
+    process — e.g. an ``implies`` whose constraints it cannot discharge.  It is a "couldn't
+    determine," not a decisive verdict, so callers should treat it as indeterminate rather than as
+    a definite answer.  ``data`` is the abort-reason text (e.g. ``"unknown constraints"``).
+    """
+
+    data: str
+
+    def __init__(self, data: str):
+        self.data = data
+        super().__init__(f'Backend aborted: {self.data}')
+
+
+@final
+@dataclass
 class DefaultError(KoreClientError):
     message: str
     code: int
@@ -922,10 +940,25 @@ class AbortedResult(ExecuteResult):
         )
 
 
+class ImpliesStatus(Enum):
+    """Tri-state verdict of an `implies` (subsumption) check, as reported on the wire.
+
+    `INDETERMINATE` is booster's "could not decide" signal (an indeterminate match or an
+    SMT-unknown obligation).  The kore-rpc proxy escalates it to a decisive kore verdict on
+    every path except booster-only mode, so it only reaches a client that opted out of kore;
+    such a client decides whether to trust it or escalate (recover-mode escalates to a kore
+    implies; binary consumers treat it as the conservative not-implied `INVALID`).
+    """
+
+    VALID = 'valid'
+    INVALID = 'invalid'
+    INDETERMINATE = 'indeterminate'
+
+
 @final
 @dataclass(frozen=True)
 class ImpliesResult:
-    valid: bool
+    status: ImpliesStatus
     implication: Pattern
     substitution: Pattern | None
     predicate: Pattern | None
@@ -937,14 +970,8 @@ class ImpliesResult:
         substitution = dct.get('condition', {}).get('substitution')
         predicate = dct.get('condition', {}).get('predicate')
         logs = tuple(LogEntry.from_dict(l) for l in dct['logs']) if 'logs' in dct else ()
-        # The backend reports a tri-state `status`: valid | invalid | indeterminate.
-        # `indeterminate` is booster's "could not decide" signal; the kore-rpc proxy
-        # escalates it to a decisive kore verdict on every path except booster-only
-        # mode, so it only reaches us when the caller explicitly opted out of kore.
-        # Collapse it to `valid = False` — the conservative not-implied answer the
-        # binary consumers expect.
         return ImpliesResult(
-            valid=dct['status'] == 'valid',
+            status=ImpliesStatus(dct['status']),
             implication=kore_term(dct['implication']),
             substitution=kore_term(substitution) if substitution is not None else None,
             predicate=kore_term(predicate) if predicate is not None else None,
@@ -1084,6 +1111,8 @@ class KoreClient(ContextManager['KoreClient']):
                 return ImplicationError(error=err.data['error'], context=err.data['context'])
             case 5:
                 return SmtSolverError(error=err.data['error'], pattern=kore_term(err.data['term']))
+            case 6:
+                return AbortedError(data=err.data)
             case 8:
                 return InvalidModuleError(error=err.data['error'], context=err.data.get('context'))
             case 9:

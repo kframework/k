@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 
+from pyk.cterm import CSubst, CTerm
+from pyk.cterm.symbolic import CTermImplies
 from pyk.kast.prelude.kbool import BOOL
 from pyk.kast.prelude.kint import intToken
 from pyk.kcfg.exploration import KCFGExplorationNodeAttr
-from pyk.kcfg.kcfg import KCFG, KCFGNodeAttr
+from pyk.kcfg.kcfg import KCFG, KCFGNodeAttr, NodeVariant, Producer, Vacuous
 from pyk.proof import EqualityProof
 from pyk.proof.implies import EqualitySummary
 from pyk.proof.proof import CompositeSummary, Proof, ProofStatus
-from pyk.proof.reachability import APRFailureInfo, APRProof, APRSummary
+from pyk.proof.reachability import (
+    APRFailureInfo,
+    APRProof,
+    APRProofExtendResult,
+    APRProofStuckResult,
+    APRProver,
+    APRSummary,
+    DecisiveInvalid,
+    Indeterminate,
+    RecoverTask,
+    Subsumed,
+    recover_task_for,
+    recovery_rung,
+)
 
 from .kcfg.test_minimize import minimization_test_kcfg
 from .test_kcfg import node, node_dicts, term
@@ -21,6 +37,9 @@ if TYPE_CHECKING:
     from typing import Final
 
     from pytest import TempPathFactory
+
+    from pyk.kcfg.kcfg import NodeAttr
+    from pyk.proof.reachability import SubsumptionCheck
 
 
 @pytest.fixture(scope='function')
@@ -236,6 +255,128 @@ def test_apr_proof_from_dict_heterogeneous_subproofs(proof_dir: Path) -> None:
 
     # Then
     assert proof.dict == proof_from_disk.dict
+
+
+def test_commit_stuck_result_marks_node_stuck() -> None:
+    # Given a proof with a pending leaf node that is neither init nor target
+    kcfg = KCFG()
+    n1 = kcfg.create_node(term(1))
+    n2 = kcfg.create_node(term(2))
+    n3 = kcfg.create_node(term(3))
+    proof = APRProof(id='stuck_proof', kcfg=kcfg, terminal=[], init=n1.id, target=n2.id, logs={})
+    assert not kcfg.is_stuck(n3.id)
+
+    # When the coordinator commits a no-progress (stuck) result for that node
+    proof.commit(APRProofStuckResult(node_id=n3.id, prior_loops_cache_update=(), optimize_kcfg=False))
+
+    # Then the node is marked stuck — `commit` is the sole `add_stuck` site
+    assert kcfg.is_stuck(n3.id)
+
+
+_CSUBST_SENTINEL: Final = CSubst()
+
+_CHECK_SUBSUME_DATA: Final = (
+    ('subsumed', _CSUBST_SENTINEL, False, Subsumed),
+    ('decisive-invalid', None, False, DecisiveInvalid),
+    ('indeterminate', None, True, Indeterminate),
+)
+
+
+@pytest.mark.parametrize(
+    'test_id,csubst,indeterminate,expected',
+    _CHECK_SUBSUME_DATA,
+    ids=[d[0] for d in _CHECK_SUBSUME_DATA],
+)
+def test_check_subsume_classification(
+    test_id: str,
+    csubst: CSubst | None,
+    indeterminate: bool,
+    expected: type[SubsumptionCheck],
+) -> None:
+    # Given a prover whose implies returns a CTermImplies with the given csubst / indeterminate
+    prover = Mock()
+    prover.fast_check_subsumption = False
+    prover.assume_defined = False
+    prover.kcfg_explore.cterm_symbolic.implies.return_value = CTermImplies(csubst, (), None, (), indeterminate)
+
+    # When (call the unbound method with the Mock as self)
+    result = APRProver._check_subsume(prover, Mock(id=1), Mock(id=2), proof_id='p')
+
+    # Then the verdict is classified
+    assert isinstance(result, expected)
+    if isinstance(result, Subsumed):
+        assert result.csubst is csubst
+
+
+def test_check_subsume_fast_skip_is_decisive_invalid() -> None:
+    # Given the fast may-subsume heuristic rejects subsumption
+    prover = Mock()
+    prover.fast_check_subsumption = True
+    prover._may_subsume.return_value = False
+
+    # When
+    result = APRProver._check_subsume(prover, Mock(id=1), Mock(id=2), proof_id='p')
+
+    # Then it is a decisive non-subsumption and the backend is never consulted
+    assert isinstance(result, DecisiveInvalid)
+    prover.kcfg_explore.cterm_symbolic.implies.assert_not_called()
+
+
+def _node_at_rung(rung: int, attrs: list[NodeAttr]) -> KCFG.Node:
+    chain: list[NodeVariant] = []
+    if rung >= 1:
+        chain = [NodeVariant(Producer.INIT, None, term(1)), NodeVariant(Producer.BOOSTER_SIMPLIFY, 'r-b', term(2))]
+    if rung >= 2:
+        chain.append(NodeVariant(Producer.KORE_SIMPLIFY, 'r-k', term(3)))
+    return KCFG.Node(1, term(rung + 1), attrs, chain)
+
+
+_RUNG_DATA: tuple[tuple[str, KCFG.Node, int], ...] = (
+    ('bare-node', KCFG.Node(1, term(1)), 0),
+    ('empty-chain', _node_at_rung(0, []), 0),
+    ('booster-simplified', _node_at_rung(1, []), 1),
+    ('kore-simplified', _node_at_rung(2, []), 2),
+)
+
+
+@pytest.mark.parametrize('test_id,node,expected', _RUNG_DATA, ids=[d[0] for d in _RUNG_DATA])
+def test_recovery_rung(test_id: str, node: KCFG.Node, expected: int) -> None:
+    assert recovery_rung(node) == expected
+
+
+_TASK_DATA: tuple[tuple[str, int, list[NodeAttr], RecoverTask], ...] = (
+    # (rung, attrs, expected) — first matching recover_task_for rule
+    ('rung0-fresh', 0, [], RecoverTask.TRY_BOOSTER),
+    ('rung0-tried', 0, [KCFGNodeAttr.BOOSTER_TRIED], RecoverTask.SIMPLIFY_BOOSTER),
+    ('rung1-fresh', 1, [], RecoverTask.TRY_BOOSTER),
+    ('rung1-tried', 1, [KCFGNodeAttr.BOOSTER_TRIED], RecoverTask.SIMPLIFY_KORE),
+    ('rung2-fresh', 2, [], RecoverTask.TRY_BOOSTER),
+    ('rung2-tried', 2, [KCFGNodeAttr.BOOSTER_TRIED], RecoverTask.TRY_KORE),
+)
+
+
+@pytest.mark.parametrize('test_id,rung,attrs,expected', _TASK_DATA, ids=[d[0] for d in _TASK_DATA])
+def test_recover_task_selection(test_id: str, rung: int, attrs: list[NodeAttr], expected: RecoverTask) -> None:
+    assert recover_task_for(_node_at_rung(rung, attrs)) is expected
+
+
+def test_recover_step_bottom_node_judged_vacuous() -> None:
+    # Given a recover-mode step whose node configuration collapsed to bare #Bottom
+    # (a booster-only re-simplify of a vacuous node can land one via add_variant)
+    prover = Mock()
+    prover.optimize_kcfg = False
+    step = Mock(node=Mock(id=1, cterm=CTerm.bottom()), recover_task=RecoverTask.TRY_BOOSTER)
+
+    # When (call the unbound method with the Mock as self)
+    results = APRProver.step_proof(prover, step)
+
+    # Then the node is judged vacuous without consulting the semantics, whose callbacks
+    # may destructure cells that a bottom configuration does not have
+    assert results == [
+        APRProofExtendResult(node_id=1, extension_to_apply=Vacuous(), prior_loops_cache_update=(), optimize_kcfg=False)
+    ]
+    prover.kcfg_explore.kcfg_semantics.is_loop.assert_not_called()
+    prover.kcfg_explore.kcfg_semantics.is_terminal.assert_not_called()
 
 
 def test_apr_proof_minimization_and_terminals() -> None:

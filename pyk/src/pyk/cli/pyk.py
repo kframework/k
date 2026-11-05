@@ -320,6 +320,7 @@ class ProveOptions(LoggingOptions, SpecOptions, SaveDirOptions):
     assume_defined: bool
     show_kcfg: bool
     haskell_logging: bool
+    booster_recover_mode: bool
 
     @staticmethod
     def default() -> dict[str, Any]:
@@ -334,6 +335,7 @@ class ProveOptions(LoggingOptions, SpecOptions, SaveDirOptions):
             'assume_defined': False,
             'show_kcfg': False,
             'haskell_logging': False,
+            'booster_recover_mode': False,
         }
 
     @staticmethod
@@ -544,6 +546,17 @@ def create_argument_parser() -> ArgumentParser:
             "Request the haskell-backend's per-request log bundle on every RPC and write it to"
             ' <save-directory>/haskell-logs/<request_id>.jsonl (one JSON value per line).'
             ' Requires --save-directory.'
+        ),
+    )
+    prove_args.add_argument(
+        '--booster-recover-mode',
+        dest='booster_recover_mode',
+        default=None,
+        action='store_true',
+        help=(
+            'Run the reachability prover booster-only, escalating to Kore (re-simplification then'
+            ' the Kore operation) only where booster cannot make progress, and record in the KCFG'
+            ' exactly where Kore did work (variants + kore_handoffs) for diagnostic attribution.'
         ),
     )
 

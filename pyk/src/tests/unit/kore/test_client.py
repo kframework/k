@@ -8,10 +8,12 @@ import pytest
 
 from pyk.kore.prelude import INT, SORT_GENERATED_TOP_CELL, int_dv
 from pyk.kore.rpc import (
+    AbortedError,
     AbortedResult,
     DefaultError,
     ImplicationError,
     ImpliesResult,
+    ImpliesStatus,
     JsonRpcClient,
     JsonRpcError,
     KoreClient,
@@ -179,7 +181,7 @@ IMPLIES_TEST_DATA: Final = (
         int_top,
         {'antecedent': kore(int_bottom), 'consequent': kore(int_top), 'assume-defined': False},
         {'status': 'valid', 'implication': kore(int_top)},
-        ImpliesResult(True, int_top, None, None, ()),
+        ImpliesResult(ImpliesStatus.VALID, int_top, None, None, ()),
     ),
 )
 
@@ -380,6 +382,12 @@ ERROR_TEST_DATA: Final = (
         ),
         SmtSolverError('Failed to decide predicate.', int_dv(0)),
         r'SMT solver error: Failed to decide predicate. Pattern: \dv{SortInt{}}("0")',
+    ),
+    (
+        'aborted-error',
+        JsonRpcError(message='Aborted', code=6, data='unknown constraints'),
+        AbortedError(data='unknown constraints'),
+        'Backend aborted: unknown constraints',
     ),
     (
         'default-error',

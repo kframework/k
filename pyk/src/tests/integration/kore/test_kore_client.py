@@ -37,6 +37,7 @@ from pyk.kore.rpc import (
     GetModelResult,
     ImplicationError,
     ImpliesResult,
+    ImpliesStatus,
     InvalidModuleError,
     LogOrigin,
     LogRewrite,
@@ -155,15 +156,20 @@ IMPLIES_TEST_DATA: Final = (
         '0 -> T',
         int_dv(0),
         int_top,
-        ImpliesResult(True, Implies(INT, int_dv(0), int_top), int_top, int_top, ()),
+        ImpliesResult(ImpliesStatus.VALID, Implies(INT, int_dv(0), int_top), int_top, int_top, ()),
     ),
-    ('0 -> 1', int_dv(0), int_dv(1), ImpliesResult(False, Implies(INT, int_dv(0), int_dv(1)), None, None, ())),
+    (
+        '0 -> 1',
+        int_dv(0),
+        int_dv(1),
+        ImpliesResult(ImpliesStatus.INVALID, Implies(INT, int_dv(0), int_dv(1)), None, None, ()),
+    ),
     (
         'X -> 0',
         x,
         int_dv(0),
         ImpliesResult(
-            False,
+            ImpliesStatus.INVALID,
             Implies(INT, x, int_dv(0)),
             Equals(
                 op_sort=INT,
@@ -175,7 +181,7 @@ IMPLIES_TEST_DATA: Final = (
             (),
         ),
     ),
-    ('X -> X', x, x, ImpliesResult(True, Implies(INT, x, x), int_top, int_top, ())),
+    ('X -> X', x, x, ImpliesResult(ImpliesStatus.VALID, Implies(INT, x, x), int_top, int_top, ())),
 )
 
 IMPLIES_ERROR_TEST_DATA: Final = (

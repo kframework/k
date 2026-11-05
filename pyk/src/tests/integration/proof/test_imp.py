@@ -15,6 +15,7 @@ from pyk.kast.prelude.kbool import BOOL, FALSE, andBool, orBool
 from pyk.kast.prelude.kint import intToken
 from pyk.kast.prelude.ml import mlAnd, mlBottom, mlEquals, mlEqualsFalse, mlEqualsTrue, mlTop
 from pyk.kast.pretty import PrettyPrinter
+from pyk.kcfg.kcfg import HandoffFlavour
 from pyk.kcfg.semantics import DefaultSemantics
 from pyk.kcfg.show import KCFGShow
 from pyk.proof import APRProver, ProofStatus
@@ -901,6 +902,41 @@ class TestImpProof(KCFGExploreTest, KProveTest):
 
         # Then
         assert actual == expected
+
+    @pytest.mark.parametrize('claim_id', ['addition-1', 'addition-2', 'pre-branch-proved'])
+    def test_booster_recover_mode_prove(
+        self,
+        kprove: KProve,
+        kcfg_explore: KCFGExplore,
+        claim_id: str,
+        tmp_path_factory: TempPathFactory,
+    ) -> None:
+        # Recover-mode must prove as well as the normal prover: a claim that passes normally still
+        # passes booster-only-with-Kore-escalation, and its diagnostic state stays well-formed.
+        proof_dir = tmp_path_factory.mktemp(f'recover_tmp_proofs-{claim_id}')
+        spec_module = 'IMP-SIMPLE-SPEC'
+        spec_modules = kprove.parse_modules(K_FILES / 'imp-simple-spec.k', module_name=spec_module)
+        spec_label = f'{spec_module}.{claim_id}'
+        proofs = APRProof.from_spec_modules(
+            kprove.definition, spec_modules, spec_labels=[spec_label], logs={}, proof_dir=proof_dir
+        )
+        proof = single([p for p in proofs if p.id == spec_label])
+        for subproof in proof.subproofs:
+            subproof.admit()
+            subproof.write_proof_data()
+
+        prover = APRProver(kcfg_explore=kcfg_explore, execute_depth=20, recover_mode=True)
+        prover.advance_proof(proof)
+
+        assert proof.status == ProofStatus.PASSED
+        # Every recorded handoff/variant must name a Kore-producer with a request-id join key; a
+        # node's canonical term always matches its variant chain's tail (invariant of add_variant).
+        for handoff in proof.kcfg.kore_handoffs:
+            assert handoff.flavour in (HandoffFlavour.EXECUTE, HandoffFlavour.IMPLIES)
+            assert handoff.request_id
+        for node in proof.kcfg.nodes:
+            if node.variants:
+                assert node.variants[-1].cterm == node.cterm
 
     @pytest.mark.parametrize(
         'test_id,spec_file,spec_module,claim_id,max_iterations,max_depth,cut_rules,admit_deps,proof_status,expected_leaf_number',

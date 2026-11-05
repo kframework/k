@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from ..kast.inner import KApply, KVariable
 from ..kast.manip import (
@@ -17,7 +17,7 @@ from ..kast.prelude.ml import is_top, mlAnd
 from ..kast.pretty import PrettyPrinter
 from ..kore.rpc import LogRewrite, RewriteSuccess
 from ..utils import not_none, shorten_hashes, single, unique
-from .kcfg import KCFG, Abstract, Branch, NDBranch, Step, Stuck, Vacuous
+from .kcfg import KCFG, Abstract, Branch, NDBranch, NoProgress, Producer, Step, Vacuous
 from .semantics import DefaultSemantics
 
 if TYPE_CHECKING:
@@ -33,6 +33,20 @@ if TYPE_CHECKING:
 
 
 _LOGGER: Final = logging.getLogger(__name__)
+
+
+class SimplifyVariant(NamedTuple):
+    """Result of a recover-mode variant-producing simplification.
+
+    Carries what the coordinator needs to land the variant (`KCFG.add_variant`) and key its
+    `KoreHandoff`: the `producer`, the simplified `cterm`, and the simplify RPC's `request_id`.
+    The per-request haskell log bundle, when wanted, is written by the configured `haskell_log_dir`
+    (see `CTermSymbolic._capture_haskell_log`) under the same `request_id`.
+    """
+
+    producer: Producer
+    cterm: CTerm
+    request_id: str | None
 
 
 class KCFGExplore:
@@ -140,6 +154,22 @@ class KCFGExplore:
                 else:
                     logs[node.id] = next_node_logs
 
+    def simplify_variant(self, cterm: CTerm, *, booster_only: bool) -> SimplifyVariant:
+        """Re-simplify ``cterm`` with one backend, capturing the request id of the call.
+
+        Non-destructive: returns a `SimplifyVariant` for the coordinator to land via
+        `KCFG.add_variant`; the recover-mode ladder uses `booster_only=True` (rung 0→1) then
+        `booster_only=False` (rung 1→2).  Per-request haskell logging is governed by the
+        `CTermSymbolic`'s configured `haskell_log_dir`, not forced here.
+        """
+        producer = Producer.BOOSTER_SIMPLIFY if booster_only else Producer.KORE_SIMPLIFY
+        simplified, _logs = self.cterm_symbolic.simplify(cterm, booster_only_simplify=booster_only)
+        return SimplifyVariant(
+            producer=producer,
+            cterm=simplified,
+            request_id=self.cterm_symbolic.last_request_id,
+        )
+
     def step(
         self,
         cfg: KCFG,
@@ -222,6 +252,8 @@ class KCFGExplore:
         cut_point_rules: Iterable[str] = (),
         terminal_rules: Iterable[str] = (),
         module_name: str | None = None,
+        booster_only_simplify: bool | None = None,
+        raise_on_aborted: bool = True,
         haskell_logging: bool | None = None,
     ) -> list[KCFGExtendResult]:
 
@@ -233,14 +265,21 @@ class KCFGExplore:
         if _cterm != abstract_cterm:
             return [Abstract(abstract_cterm)]
 
-        cterm, next_states, depth, vacuous, next_node_logs = self.cterm_symbolic.execute(
+        exec_result = self.cterm_symbolic.execute(
             _cterm,
             depth=execute_depth,
             cut_point_rules=cut_point_rules,
             terminal_rules=terminal_rules,
             module_name=module_name,
+            booster_only_simplify=booster_only_simplify,
+            raise_on_aborted=raise_on_aborted,
             haskell_logging=haskell_logging,
         )
+        cterm = exec_result.state
+        next_states = exec_result.next_states
+        depth = exec_result.depth
+        vacuous = exec_result.vacuous
+        next_node_logs = exec_result.logs
 
         extend_results: list[KCFGExtendResult] = []
 
@@ -248,12 +287,14 @@ class KCFGExplore:
         if depth > 0:
             extend_results.append(Step(cterm, depth, next_node_logs, self._extract_rule_labels(next_node_logs)))
 
-        # Stuck or vacuous
+        # No-progress or vacuous.  `Vacuous` is a context-free semantic verdict and stays here; a
+        # depth-0 no-progress result is reported as the neutral `NoProgress` rather than `Stuck`, so
+        # the coordinator (`APRProof.commit`) decides whether the node is terminal.
         if not next_states:
             if vacuous:
                 extend_results.append(Vacuous())
             elif depth == 0:
-                extend_results.append(Stuck())
+                extend_results.append(NoProgress())
         # Cut rule
         elif len(next_states) == 1:
             if not self.kcfg_semantics.can_make_custom_step(cterm):

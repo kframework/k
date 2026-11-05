@@ -5,7 +5,7 @@ import tempfile
 from os import PathLike
 from typing import TYPE_CHECKING
 
-from pyk.cli.pyk import PrintInput, create_argument_parser, parse_toml_args
+from pyk.cli.pyk import PrintInput, ProveOptions, create_argument_parser, parse_toml_args
 
 from .utils import TEST_DATA_DIR
 
@@ -43,6 +43,17 @@ def test_print_input() -> None:
     args_dict = parse_toml_args(args)
     assert args_dict['input'] == PrintInput.KAST_JSON
     assert not args_dict['minimize']
+
+
+def test_prove_booster_recover_mode_flag() -> None:
+    parser = create_argument_parser()
+
+    # The flag parses to True and is off (None at the arg layer, False in ProveOptions) by default
+    args = parser.parse_args(['prove', str(TEST_TOML), '--booster-recover-mode'])
+    assert args.booster_recover_mode is True
+    args_default = parser.parse_args(['prove', str(TEST_TOML)])
+    assert args_default.booster_recover_mode is None
+    assert ProveOptions.default()['booster_recover_mode'] is False
 
 
 def test_prove_legacy_kargs() -> None:

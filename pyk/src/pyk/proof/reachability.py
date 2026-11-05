@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from abc import ABC
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from enum import Enum
+from typing import TYPE_CHECKING, final
 
 from ..cterm.cterm import remove_useless_constraints
 from ..kast.inner import KInner, Subst
@@ -13,6 +15,7 @@ from ..kast.outer import KClaim, KFlatModule, KImport, KRule
 from ..kast.prelude.ml import mlAnd, mlTop
 from ..kcfg import KCFG, KCFGStore
 from ..kcfg.exploration import KCFGExploration
+from ..kcfg.kcfg import HandoffFlavour, KCFGNodeAttr, KoreHandoff, NoProgress, Producer, Vacuous
 from ..kore.rpc import LogEntry, client_label
 from ..ktool.claim_index import ClaimIndex
 from ..utils import FrozenDict, ensure_dir_path, hash_str, shorten_hashes, single
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import Any, Final, TypeVar
 
+    from ..cterm import CTerm
     from ..kast.outer import KDefinition, KFlatModuleList, KRuleLike
     from ..kcfg import KCFGExplore
     from ..kcfg.explore import KCFGExtendResult
@@ -32,6 +36,52 @@ if TYPE_CHECKING:
     T = TypeVar('T', bound='Proof')
 
 _LOGGER: Final = logging.getLogger(__name__)
+
+
+class RecoverTask(Enum):
+    """The per-node task the recover-mode coordinator assigns to a worker.
+
+    `TRY_BOOSTER`/`TRY_KORE` are the combined subsume-then-execute step with one backend;
+    `SIMPLIFY_BOOSTER`/`SIMPLIFY_KORE` each produce one re-simplification variant.
+    """
+
+    TRY_BOOSTER = 'try-booster'
+    SIMPLIFY_BOOSTER = 'simplify-booster'
+    SIMPLIFY_KORE = 'simplify-kore'
+    TRY_KORE = 'try-kore'
+
+
+class RecoverBackend(Enum):
+    """Which backend a recover-mode `try` used — booster-only, or kore-enabled."""
+
+    BOOSTER = 'booster'
+    KORE = 'kore'
+
+
+def recovery_rung(node: KCFG.Node) -> int:
+    """Compute the node's recovery rung: 0 (original), 1 (booster-simplified), 2 (kore-simplified).
+
+    Derived from the producer of the most-simplified variant; an empty chain is rung 0.
+    """
+    if not node.variants:
+        return 0
+    return {Producer.INIT: 0, Producer.BOOSTER_SIMPLIFY: 1, Producer.KORE_SIMPLIFY: 2}[node.variants[-1].producer]
+
+
+def recover_task_for(node: KCFG.Node) -> RecoverTask:
+    """Pick the next recover-mode task for a *pending* node from its rung and attrs.
+
+    A pending node never has both `BOOSTER_TRIED` and `KORE_TRIED` at rung 2 — `commit` would have
+    marked that node stuck — so the rung-2 branch is always `TRY_KORE`.
+    """
+    if KCFGNodeAttr.BOOSTER_TRIED not in node.attrs:
+        return RecoverTask.TRY_BOOSTER
+    rung = recovery_rung(node)
+    if rung == 0:
+        return RecoverTask.SIMPLIFY_BOOSTER
+    if rung == 1:
+        return RecoverTask.SIMPLIFY_KORE
+    return RecoverTask.TRY_KORE
 
 
 @dataclass
@@ -75,6 +125,81 @@ class APRProofTerminalResult(APRProofResult): ...
 class APRProofBoundedResult(APRProofResult): ...
 
 
+@dataclass
+class APRProofStuckResult(APRProofResult):
+    """The backend reported no progress; the coordinator (`commit`) is to mark the node stuck.
+
+    Carrying this as a distinct result — rather than a `Stuck` extension applied by `KCFG.extend` —
+    keeps `add_stuck` solely in `commit`, where the full node context lives.
+    """
+
+
+@dataclass
+class APRProofAddVariantResult(APRProofResult):
+    """Recover-mode: a re-simplification variant for `commit` to append via `KCFG.add_variant`."""
+
+    producer: Producer
+    cterm: CTerm
+    request_id: str | None
+
+
+@dataclass
+class APRProofRecoverNoProgressResult(APRProofResult):
+    """Recover-mode: a `try` made no progress; `commit` sets the per-backend attr (and may stuck)."""
+
+    backend: RecoverBackend
+    subsume_indeterminate: bool
+
+
+@dataclass
+class APRProofRecoverAdvanceResult(APRProofResult):
+    """Recover-mode: a `try` advanced the node; `commit` applies the extension and records a handoff.
+
+    ``kore_request_id`` is set iff this was a kore execute — `commit` builds the ``execute``
+    `KoreHandoff` from it once the successor node exists.
+    """
+
+    extension_to_apply: KCFGExtendResult
+    kore_request_id: str | None
+
+
+@dataclass
+class APRProofRecoverCloseResult(APRProofResult):
+    """Recover-mode: a `try` closed the node by subsumption; `commit` covers and records a handoff.
+
+    ``kore_request_id`` is set iff a kore implies closed it — `commit` builds the ``implies``
+    `KoreHandoff` from it.
+    """
+
+    csubst: CSubst
+    kore_request_id: str | None
+
+
+class SubsumptionCheck(ABC):
+    """Tagged outcome of a subsumption (`implies`) check, replacing a bare ``CSubst | None``.
+
+    Distinguishes a decisive non-subsumption (``DecisiveInvalid`` — trust it) from a
+    couldn't-determine (``Indeterminate`` — recover-mode escalates to a kore implies).  Today both
+    map to "proceed to execute", identical to the old ``csubst is None``.
+    """
+
+
+@final
+@dataclass(frozen=True)
+class Subsumed(SubsumptionCheck):
+    csubst: CSubst
+
+
+@final
+@dataclass(frozen=True)
+class DecisiveInvalid(SubsumptionCheck): ...
+
+
+@final
+@dataclass(frozen=True)
+class Indeterminate(SubsumptionCheck): ...
+
+
 @dataclass(frozen=True)
 class APRProofStep:
     node: KCFG.Node
@@ -88,6 +213,7 @@ class APRProofStep:
     circularity: bool
     nonzero_depth: bool
     circularity_rule_id: str
+    recover_task: RecoverTask | None = None
 
 
 class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
@@ -113,6 +239,9 @@ class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
     _exec_time: float
     error_info: Exception | None
     prior_loops_cache: dict[int, tuple[int, ...]]
+    # Runtime flag (not persisted): the prover sets it in `init_proof` so the coordinator's
+    # `get_steps`/`commit` run the recover-mode ladder.  Resume re-supplies it via the CLI flag.
+    recover_mode: bool
 
     _checked_for_bounded: set[int]
     _next_steps: dict[NodeIdLike, KCFGExtendResult]
@@ -156,6 +285,7 @@ class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
 
         self._checked_for_bounded = set()
         self._next_steps = {}
+        self.recover_mode = False
 
         if self.proof_dir is not None and self.proof_subdir is not None:
             ensure_dir_path(self.proof_dir)
@@ -197,12 +327,21 @@ class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
                 single(predecessor_edges).source.id if predecessor_edges != [] else None
             )
 
+            # Recover-mode: the coordinator picks the per-node task and disables extend-and-cache
+            # (caching a second extend interacts badly with re-trying a node across rungs).
+            recover_task = recover_task_for(node) if self.recover_mode else None
+            use_cache = (
+                None
+                if self.recover_mode
+                else (predecessor_node_id if predecessor_node_id in self._next_steps else None)
+            )
+
             steps.append(
                 APRProofStep(
                     bmc_depth=self.bmc_depth,
                     module_name=module_name,
                     node=node,
-                    use_cache=predecessor_node_id if predecessor_node_id in self._next_steps else None,
+                    use_cache=use_cache,
                     proof_id=self.id,
                     target=self.kcfg.node(self.target),
                     shortest_path_to_node=tuple(shortest_path),
@@ -210,6 +349,7 @@ class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
                     circularity=self.circularity,
                     nonzero_depth=nonzero_depth,
                     circularity_rule_id=f'{self.rule_id}-{self.init}-TO-{self.target}',
+                    recover_task=recover_task,
                 )
             )
         return steps
@@ -240,10 +380,85 @@ class APRProof(Proof[APRProofStep, APRProofResult], KCFGExploration):
             self.kcfg.create_cover(result.node_id, self.target, csubst=result.csubst)
         elif isinstance(result, APRProofTerminalResult):
             self.add_terminal(result.node_id)
+        elif isinstance(result, APRProofStuckResult):
+            # Sole site that marks a node stuck: the coordinator owns this judgment.
+            _LOGGER.info(f'Stuck node {self.id}: {result.node_id}')
+            self.kcfg.add_stuck(result.node_id)
+        elif isinstance(result, APRProofAddVariantResult):
+            self._commit_add_variant(result)
+        elif isinstance(result, APRProofRecoverNoProgressResult):
+            self._commit_recover_no_progress(result)
+        elif isinstance(result, APRProofRecoverAdvanceResult):
+            self.kcfg.extend(
+                extend_result=result.extension_to_apply,
+                optimize_kcfg=result.optimize_kcfg,
+                node=self.kcfg.node(result.node_id),
+                logs=self.logs,
+            )
+            if result.kore_request_id is not None:
+                target_id = self._recover_successor_id(result.node_id)
+                self.kcfg.add_kore_handoff(
+                    KoreHandoff(
+                        source=result.node_id,
+                        target=target_id,
+                        flavour=HandoffFlavour.EXECUTE,
+                        request_id=result.kore_request_id,
+                    )
+                )
+        elif isinstance(result, APRProofRecoverCloseResult):
+            self.kcfg.create_cover(result.node_id, self.target, csubst=result.csubst)
+            if result.kore_request_id is not None:
+                self.kcfg.add_kore_handoff(
+                    KoreHandoff(
+                        source=result.node_id,
+                        target=self.target,
+                        flavour=HandoffFlavour.IMPLIES,
+                        request_id=result.kore_request_id,
+                    )
+                )
         elif isinstance(result, APRProofBoundedResult):
             self.add_bounded(result.node_id)
         else:
             raise ValueError(f'Incorrect result type, expected APRProofResult: {result}')
+
+    def _commit_add_variant(self, result: APRProofAddVariantResult) -> None:
+        # Clear-iff-changed invariant: clear the per-rung try attrs only when the simplify actually
+        # changed the term, so the simplified node is re-tried with booster.  A no-op variant leaves
+        # BOOSTER_TRIED set, so the next task is the next simplify rung (the no-op short-circuit)
+        # rather than a futile TRY_BOOSTER on the byte-identical term.
+        prev_cterm = self.kcfg.node(result.node_id).cterm
+        self.kcfg.add_variant(result.node_id, result.producer, result.cterm, result.request_id)
+        if result.cterm != prev_cterm:
+            self.kcfg.discard_attr(result.node_id, KCFGNodeAttr.BOOSTER_TRIED)
+            self.kcfg.discard_attr(result.node_id, KCFGNodeAttr.SUBSUME_INDETERMINATE)
+
+    def _commit_recover_no_progress(self, result: APRProofRecoverNoProgressResult) -> None:
+        match result.backend:
+            case RecoverBackend.KORE:
+                self.kcfg.add_attr(result.node_id, KCFGNodeAttr.KORE_TRIED)
+            case RecoverBackend.BOOSTER:
+                self.kcfg.add_attr(result.node_id, KCFGNodeAttr.BOOSTER_TRIED)
+                if result.subsume_indeterminate:
+                    self.kcfg.add_attr(result.node_id, KCFGNodeAttr.SUBSUME_INDETERMINATE)
+        # Rung-2 exhaustion: booster simplify, kore simplify, booster try, and kore try all failed to
+        # advance the node — a genuine dead-end.  The coordinator (and only it) marks it stuck,
+        # tagged so the diagnostic can distinguish it from an ordinary stuck.
+        attrs = self.kcfg.node(result.node_id).attrs
+        if KCFGNodeAttr.BOOSTER_TRIED in attrs and KCFGNodeAttr.KORE_TRIED in attrs:
+            self.kcfg.add_attr(result.node_id, KCFGNodeAttr.BOTH_BACKENDS_FAILED)
+            _LOGGER.info(f'Both backends failed, stuck node {self.id}: {result.node_id}')
+            self.kcfg.add_stuck(result.node_id)
+
+    def _recover_successor_id(self, node_id: int) -> int:
+        """Resolve the kore execute handoff target: the (min) new successor of ``node_id``.
+
+        Falls back to ``node_id`` itself if the node was merged away under ``optimize_kcfg`` — the
+        ``request_id`` remains the durable join key onto the stored logs in that case.
+        """
+        if self.kcfg.get_node(node_id) is None:
+            return node_id
+        targets = [target_id for succ in self.kcfg.successors(node_id) for target_id in succ.target_ids]
+        return min(targets) if targets else node_id
 
     def nonzero_depth(self, node: KCFG.Node) -> bool:
         return not self.kcfg.zero_depth_between(self.init, node.id)
@@ -725,6 +940,7 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
     kcfg_explore: KCFGExplore
     extra_module: KFlatModule | None
     optimize_kcfg: bool
+    recover_mode: bool
     step_timeout: int | None
 
     def __init__(
@@ -739,6 +955,7 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
         assume_defined: bool = False,
         extra_module: KFlatModule | None = None,
         optimize_kcfg: bool = False,
+        recover_mode: bool = False,
         step_timeout: int | None = None,
     ) -> None:
 
@@ -753,6 +970,7 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
         self.assume_defined = assume_defined
         self.extra_module = extra_module
         self.optimize_kcfg = optimize_kcfg
+        self.recover_mode = recover_mode
         # Whole seconds, floored at 1; None disables the per-step timeout/shrink policy entirely.
         self.step_timeout = max(1, step_timeout) if step_timeout is not None else None
 
@@ -776,6 +994,10 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
         # claim.  Worker-thread consumers must `client_label.set(...)` inside
         # their own closure — `ContextVar` is not propagated by ThreadPoolExecutor.
         client_label.set(proof.id)
+
+        # Propagate the prover's recover-mode config onto the proof so the coordinator's
+        # `get_steps`/`commit` (which live on the proof) run the recover-mode ladder.
+        proof.recover_mode = self.recover_mode
 
         main_module_name = self.main_module_name
         if self.extra_module:
@@ -813,19 +1035,48 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
             return False
         return True
 
-    def _check_subsume(self, node: KCFG.Node, target_node: KCFG.Node, proof_id: str) -> CSubst | None:
+    def _check_subsume(
+        self,
+        node: KCFG.Node,
+        target_node: KCFG.Node,
+        proof_id: str,
+        booster_only: bool | None = None,
+    ) -> SubsumptionCheck:
         target_cterm = target_node.cterm
         _LOGGER.debug(f'Checking subsumption into target state {proof_id}: {shorten_hashes((node.id, target_cterm))}')
         if self.fast_check_subsumption and not self._may_subsume(node, target_node):
             _LOGGER.info(f'Skipping full subsumption check because of fast may subsume check {proof_id}: {node.id}')
-            return None
-        _csubst = self.kcfg_explore.cterm_symbolic.implies(node.cterm, target_cterm, assume_defined=self.assume_defined)
-        csubst = _csubst.csubst
-        if csubst is not None:
+            return DecisiveInvalid()
+        result = self.kcfg_explore.cterm_symbolic.implies(
+            node.cterm,
+            target_cterm,
+            assume_defined=self.assume_defined,
+            booster_only_simplify=booster_only,
+        )
+        if result.csubst is not None:
             _LOGGER.info(f'Subsumed into target node {proof_id}: {shorten_hashes((node.id, target_node.id))}')
-        return csubst
+            return Subsumed(result.csubst)
+        # Not subsumed: a decisive invalid is trusted; a couldn't-determine (an aborted implies)
+        # is surfaced so recover-mode can escalate to a kore implies.
+        return Indeterminate() if result.indeterminate else DecisiveInvalid()
 
     def step_proof(self, step: APRProofStep) -> list[APRProofResult]:
+        # Recover-mode only: a booster-only re-simplify can collapse a node's configuration to bare
+        # `#Bottom`, which has no destructurable cells, so any semantics callback (`is_loop`,
+        # `is_terminal`, ...) may crash on it.  Short-circuit to the same `Vacuous` judgment
+        # `commit` applies on the normal path — there `extend_cterm` owns vacuity detection and a
+        # bottom configuration never lands in a node, but the recover ladder's `add_variant`
+        # bypasses that path.
+        if step.recover_task is not None and step.node.cterm.is_bottom:
+            return [
+                APRProofExtendResult(
+                    node_id=step.node.id,
+                    extension_to_apply=Vacuous(),
+                    prior_loops_cache_update=(),
+                    optimize_kcfg=self.optimize_kcfg,
+                )
+            ]
+
         # Check if the current node should be bounded
         prior_loops: tuple[int, ...] = ()
         if step.bmc_depth is not None and self.kcfg_explore.kcfg_semantics.is_loop(step.node.cterm):
@@ -844,6 +1095,11 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
                     )
                 ]
 
+        # Recover-mode dispatches to a self-contained ladder step (terminal/subsume/execute are
+        # handled within, per the assigned task); the normal path below is left untouched.
+        if step.recover_task is not None:
+            return self._recover_step(step, prior_loops)
+
         # Check if the current node and target are terminal
         is_terminal = self.kcfg_explore.kcfg_semantics.is_terminal(step.node.cterm)
         target_is_terminal = self.kcfg_explore.kcfg_semantics.is_terminal(step.target.cterm)
@@ -861,13 +1117,13 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
         # Subsumption is checked if and only if the target node
         # and the current node are either both terminal or both not terminal
         if is_terminal == target_is_terminal:
-            csubst = self._check_subsume(step.node, step.target, proof_id=step.proof_id)
-            if csubst is not None:
+            subsumption = self._check_subsume(step.node, step.target, proof_id=step.proof_id)
+            if isinstance(subsumption, Subsumed):
                 # Information about the subsumed node being terminal must be returned
                 # so that the set of terminal nodes is correctly updated
                 return terminal_result + [
                     APRProofSubsumeResult(
-                        csubst=csubst,
+                        csubst=subsumption.csubst,
                         optimize_kcfg=self.optimize_kcfg,
                         node_id=step.node.id,
                         prior_loops_cache_update=prior_loops,
@@ -911,6 +1167,16 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
 
         # We can obtain two results at most
         assert len(extend_results) <= 2
+        # A no-progress result is not applied to the KCFG by the worker; the coordinator decides
+        # the node is stuck (sole `add_stuck` site is `commit`).
+        if len(extend_results) == 1 and isinstance(extend_results[0], NoProgress):
+            return [
+                APRProofStuckResult(
+                    node_id=step.node.id,
+                    optimize_kcfg=self.optimize_kcfg,
+                    prior_loops_cache_update=prior_loops,
+                )
+            ]
         # We have obtained two results: first is to be applied, second to be cached potentially
         if len(extend_results) == 2:
             # Cache only if the current node is at non-zero depth
@@ -933,6 +1199,138 @@ class APRProver(Prover[APRProof, APRProofStep, APRProofResult]):
                 extension_to_apply=extend_results[0],
                 prior_loops_cache_update=prior_loops,
                 optimize_kcfg=self.optimize_kcfg,
+            )
+        ]
+
+    def _recover_step(self, step: APRProofStep, prior_loops: tuple[int, ...]) -> list[APRProofResult]:
+        task = step.recover_task
+        assert task is not None
+        match task:
+            case RecoverTask.SIMPLIFY_BOOSTER:
+                return self._recover_simplify(step, prior_loops, booster_only=True)
+            case RecoverTask.SIMPLIFY_KORE:
+                return self._recover_simplify(step, prior_loops, booster_only=False)
+            case RecoverTask.TRY_BOOSTER:
+                return self._recover_try(step, prior_loops, is_kore=False)
+            case RecoverTask.TRY_KORE:
+                return self._recover_try(step, prior_loops, is_kore=True)
+
+    def _recover_simplify(
+        self, step: APRProofStep, prior_loops: tuple[int, ...], *, booster_only: bool
+    ) -> list[APRProofResult]:
+        variant = self.kcfg_explore.simplify_variant(step.node.cterm, booster_only=booster_only)
+        return [
+            APRProofAddVariantResult(
+                node_id=step.node.id,
+                prior_loops_cache_update=prior_loops,
+                optimize_kcfg=self.optimize_kcfg,
+                producer=variant.producer,
+                cterm=variant.cterm,
+                request_id=variant.request_id,
+            )
+        ]
+
+    def _recover_try(self, step: APRProofStep, prior_loops: tuple[int, ...], *, is_kore: bool) -> list[APRProofResult]:
+        node = step.node
+        cs = self.kcfg_explore.cterm_symbolic
+        semantics = self.kcfg_explore.kcfg_semantics
+        is_terminal = semantics.is_terminal(node.cterm)
+        target_is_terminal = semantics.is_terminal(step.target.cterm)
+        terminal_result: list[APRProofResult] = (
+            [
+                APRProofTerminalResult(
+                    node_id=node.id, optimize_kcfg=self.optimize_kcfg, prior_loops_cache_update=prior_loops
+                )
+            ]
+            if is_terminal
+            else []
+        )
+
+        # Subsumption: TRY_BOOSTER always checks (booster-only); TRY_KORE checks (kore) only when the
+        # prior booster subsumption was indeterminate — otherwise we trust the decisive booster
+        # invalid and skip straight to kore-execute.
+        subsume_indeterminate = False
+        run_subsume = (is_terminal == target_is_terminal) and (
+            not is_kore or KCFGNodeAttr.SUBSUME_INDETERMINATE in node.attrs
+        )
+        if run_subsume:
+            subsumption = self._check_subsume(node, step.target, proof_id=step.proof_id, booster_only=not is_kore)
+            request_id = cs.last_request_id
+            if isinstance(subsumption, Subsumed):
+                return terminal_result + [
+                    APRProofRecoverCloseResult(
+                        node_id=node.id,
+                        prior_loops_cache_update=prior_loops,
+                        optimize_kcfg=self.optimize_kcfg,
+                        csubst=subsumption.csubst,
+                        kore_request_id=request_id if is_kore else None,
+                    )
+                ]
+            subsume_indeterminate = isinstance(subsumption, Indeterminate)
+
+        # A terminal node is finalized as terminal — and so, if unsubsumed, declared failing — only
+        # once a kore implies has had its say.  Normal mode's proxy implies (booster + kore fallback)
+        # closes terminal end-states that booster alone cannot; recover-mode must match that or it
+        # regresses passing proofs into failures (a terminal node that booster cannot subsume but
+        # kore can would otherwise be marked terminal at rung 0 and drop out of `pending` before the
+        # ladder ever reaches TRY_KORE).  So a non-kore try whose subsumption check ran and did not
+        # close escalates instead: it records BOOSTER_TRIED + SUBSUME_INDETERMINATE (forced, even on
+        # a decisive booster invalid — for a terminal node we always want kore's second opinion
+        # before failing it) so the node climbs to TRY_KORE's kore implies.  Only the kore try (or a
+        # terminal/non-terminal target mismatch that skipped the check, exactly as normal mode skips
+        # it) finalizes a terminal node here.
+        if is_terminal:
+            if not is_kore and run_subsume:
+                return [
+                    APRProofRecoverNoProgressResult(
+                        node_id=node.id,
+                        prior_loops_cache_update=prior_loops,
+                        optimize_kcfg=self.optimize_kcfg,
+                        backend=RecoverBackend.BOOSTER,
+                        subsume_indeterminate=True,
+                    )
+                ]
+            return terminal_result
+
+        cut_rules = list(self.cut_point_rules)
+        if step.circularity and step.nonzero_depth:
+            cut_rules.append(step.circularity_rule_id)
+        # TRY_KORE takes a single kore step; TRY_BOOSTER uses the prover's normal depth.
+        execute_depth = 1 if is_kore else self.execute_depth
+        if not is_kore and step.circularity and not step.nonzero_depth:
+            execute_depth = 1
+
+        extend_results = self.kcfg_explore.extend_cterm(
+            node.cterm,
+            execute_depth=execute_depth,
+            cut_point_rules=cut_rules,
+            terminal_rules=self.terminal_rules,
+            module_name=step.module_name,
+            node_id=node.id,
+            booster_only_simplify=not is_kore,
+            raise_on_aborted=False,
+        )
+        request_id = cs.last_request_id
+
+        # No progress: the worker does not stuck the node; commit sets the per-backend attr.
+        if extend_results and isinstance(extend_results[0], NoProgress):
+            return [
+                APRProofRecoverNoProgressResult(
+                    node_id=node.id,
+                    prior_loops_cache_update=prior_loops,
+                    optimize_kcfg=self.optimize_kcfg,
+                    backend=RecoverBackend.KORE if is_kore else RecoverBackend.BOOSTER,
+                    subsume_indeterminate=subsume_indeterminate,
+                )
+            ]
+        # Progress: apply the first extension (extend-and-cache is disabled in recover-mode).
+        return [
+            APRProofRecoverAdvanceResult(
+                node_id=node.id,
+                prior_loops_cache_update=prior_loops,
+                optimize_kcfg=self.optimize_kcfg,
+                extension_to_apply=extend_results[0],
+                kore_request_id=request_id if is_kore else None,
             )
         ]
 

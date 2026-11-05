@@ -14,7 +14,9 @@ from ..kast.prelude.ml import mlAnd
 from ..kast.pretty import PrettyPrinter
 from ..konvert import kast_to_kore, kflatmodule_to_kore, kore_to_kast
 from ..kore.rpc import (
+    AbortedError,
     AbortedResult,
+    ImpliesStatus,
     KoreClient,
     KoreExecLogFormat,
     SatResult,
@@ -78,6 +80,9 @@ class CTermImplies(NamedTuple):
     failing_cells: tuple[tuple[str, KInner], ...]
     remaining_implication: KInner | None
     logs: tuple[LogEntry, ...]
+    # True when the backend aborted the implies (it could not decide it) — a couldn't-determine,
+    # not a decisive verdict.  Recover-mode escalates on it instead of trusting `csubst is None`.
+    indeterminate: bool = False
 
 
 @final
@@ -157,6 +162,16 @@ class CTermSymbolic:
         log_file = self._haskell_log_dir / f'{request_id}.jsonl'
         log_file.write_text('\n'.join(json.dumps(entry) for entry in entries) + '\n')
 
+    @property
+    def last_request_id(self) -> str | None:
+        """JSON-RPC id of the most recent RPC issued by the backing client (see `KoreClient.last_request_id`).
+
+        Recover-mode snapshots this immediately after a simplify to key the `KoreHandoff` to that
+        request, so a handoff can be correlated with the per-request log file that the configured
+        `haskell_log_dir` writer (see `_capture_haskell_log`) emits for the same id.
+        """
+        return self._kore_client.last_request_id
+
     def execute(
         self,
         cterm: CTerm,
@@ -166,6 +181,7 @@ class CTermSymbolic:
         module_name: str | None = None,
         booster_only_simplify: bool | None = None,
         haskell_logging: bool | None = None,
+        raise_on_aborted: bool = True,
     ) -> CTermExecute:
 
         _LOGGER.debug(f'Executing: {cterm}')
@@ -188,7 +204,12 @@ class CTermSymbolic:
             raise self._smt_solver_error(err) from err
         self._capture_haskell_log(response.haskell_log_entries)
 
-        if isinstance(response, AbortedResult):
+        # Under booster-only execution, an `AbortedResult` is the expected signal that the booster
+        # could make no further progress (it is what drives the recover-mode ladder).  Callers that
+        # expect aborts pass `raise_on_aborted=False`; the `AbortedResult.reason`/`next_states`
+        # class attributes let the rest of this body proceed unchanged, and a no-progress abort
+        # surfaces as a depth-0 result.
+        if raise_on_aborted and isinstance(response, AbortedResult):
             unknown_predicate = response.unknown_predicate.text if response.unknown_predicate else None
             raise ValueError(f'Backend responded with aborted state. Unknown predicate: {unknown_predicate}')
 
@@ -320,9 +341,26 @@ class CTermSymbolic:
             )
         except SmtSolverError as err:
             raise self._smt_solver_error(err) from err
+        except AbortedError as err:
+            # The backend aborted because it could not decide the implication (e.g. constraints
+            # the engine cannot discharge).  Surface it as an indeterminate, not-subsumed result,
+            # so callers (notably recover-mode's TRY_KORE escalation, which calls kore-implies
+            # directly and so sees the raw abort the proxy would otherwise absorb) treat it as
+            # "unknown" instead of crashing.
+            _LOGGER.warning(f'implies aborted, treating as indeterminate: {err.data}')
+            return CTermImplies(None, (), None, (), indeterminate=True)
         self._capture_haskell_log(result.haskell_log_entries)
 
-        if not result.valid:
+        if result.status is ImpliesStatus.INDETERMINATE:
+            # The backend could not decide the subsumption (booster's indeterminate-match or
+            # SMT-unknown path, which replaced the old hard AbortedError on some non-decisive
+            # outcomes). Surface as indeterminate so recover-mode escalates to a kore implies,
+            # mirroring the AbortedError catch above. The decisive failing-cell /
+            # remaining-implication computation below is meaningless here.
+            _LOGGER.debug('implies returned indeterminate, treating as indeterminate')
+            return CTermImplies(None, (), None, result.logs, indeterminate=True)
+
+        if result.status is ImpliesStatus.INVALID:
             if result.substitution is not None:
                 _LOGGER.debug(f'Received a non-empty substitution for falsifiable implication: {result.substitution}')
             if result.predicate is not None:
