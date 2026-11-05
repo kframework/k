@@ -714,7 +714,7 @@ side and all variables are bound, it is O(N*log(M)) where M is the size of the
 set it is matching and N is the number of elements being matched. When it
 appears on the left hand side containing variables not bound elsewhere in the
 term, it is O(N^K) where N is the size of the set it is matching and K is the
-number of unbound keys being mached. In other words, one unbound variable is
+number of unbound keys being matched. In other words, one unbound variable is
 linear, two is quadratic, three is cubic, etc.
 
 ```k
@@ -940,7 +940,7 @@ The list with zero elements is represented by `.List`.
 
 ### List elements
 
-An element of a `List` is constucted via the `ListItem` operator.
+An element of a `List` is constructed via the `ListItem` operator.
 
 ```k
   syntax List ::= ListItem(KItem)             [function, total, hook(LIST.element), symbol(ListItem), smtlib(smt_seq_elem)]
@@ -960,7 +960,7 @@ An element can be added to the front of a `List` using the `pushList` operator.
 You can get an element of a list by its integer offset in O(log(N)) time, or
 effectively constant. Positive `Int` indices are 0-indexed from the beginning of the
 list, and negative indices are -1-indexed from the end of the list. In other
-words, 0 is the first element and -1 is the last element. The indice can also be
+words, 0 is the first element and -1 is the last element. The index can also be
 `MInt`, which is interprested as an unsigned integer, and therefore, don't support
 negative indices feature. Currently, only 64-bit and 256-bit `MInt` types are supported.
 
@@ -992,7 +992,7 @@ time.
 
 You can create a new `List` which is equal to `dest` except the `N` elements
 starting at `index` are replaced with the contents of `src` in O(N*log(K)) time
-(where `K` is the size of `dest`and `N` is the size of `src`), or effectively linear. Having `index + N > K` yields an exception.
+(where `K` is the size of `dest` and `N` is the size of `src`), or effectively linear. Having `index + N > K` yields an exception.
 
 ```k
   syntax List ::= updateList(dest: List, index: Int, src: List) [function, hook(LIST.updateAll)]
@@ -1307,7 +1307,7 @@ is `#False`.
 ### Bit slicing
 
 You can compute the value of a range of bits in the twos-complement
-representation of an integer, as interpeted either unsigned or signed, of an
+representation of an integer, as interpreted either unsigned or signed, of an
 integer. `index` is offset from 0 and `length` is the number of bits, starting
 with `index`, that should be read. The number is assumed to be represented
 in little endian notation with each byte going from least significant to
@@ -1403,9 +1403,9 @@ module INT-KORE [symbolic]
 
   rule [eq-k-to-eq-int]     : I1:Int ==K I2:Int            => I1 ==Int I2           [simplification]
   rule [eq-int-true-left]   : {K1 ==Int K2 #Equals true}   => {K1 #Equals K2}       [simplification]
-  rule [eq-int-true-rigth]  : {true #Equals K1 ==Int K2}   => {K1 #Equals K2}       [simplification]
+  rule [eq-int-true-right]  : {true #Equals K1 ==Int K2}   => {K1 #Equals K2}       [simplification]
   rule [eq-int-false-left]  : {K1 ==Int K2 #Equals false}  => #Not({K1 #Equals K2}) [simplification]
-  rule [eq-int-false-rigth] : {false #Equals K1 ==Int K2}  => #Not({K1 #Equals K2}) [simplification]
+  rule [eq-int-false-right] : {false #Equals K1 ==Int K2}  => #Not({K1 #Equals K2}) [simplification]
   rule [neq-int-true-left]  : {K1 =/=Int K2 #Equals true}  => #Not({K1 #Equals K2}) [simplification]
   rule [neq-int-true-right] : {true #Equals K1 =/=Int K2}  => #Not({K1 #Equals K2}) [simplification]
   rule [neq-int-false-left] : {K1 =/=Int K2 #Equals false} => {K1 #Equals K2}       [simplification]
@@ -1471,7 +1471,7 @@ The syntax of ordinary floating-point values in K consists of an optional sign
 followed by an optional fractional part. Either the integer part or the
 fractional part must be specified. The mantissa is followed by an optional
 exponent part, which consists of an `e` or `E`, an optional sign (+ or -),
-and an integer. The expoennt is followed by an optional suffix, which can be
+and an integer. The exponent is followed by an optional suffix, which can be
 either `f`, `F`, `d`, `D`, or `pNxM` where `N` and `M` are positive integers.
 `p` and `x` can be either upper or lowercase.
 
@@ -1481,7 +1481,7 @@ power of the exponent, which is interpreted as an integer, and defaults to
 zero if it is not present. Finally, it is rounded to the nearest possible
 value in a floating-point type represented like an IEEE754 floating-point type,
 with the number of bits of precision and exponent specified by the suffix.
-A suffix of `f` or `f` represents the IEEE `binary32` format. A suffix of `d`
+A suffix of `f` or `F` represents the IEEE `binary32` format. A suffix of `d`
 or `D`, or no suffix, represents the IEEE `binary64` format. A suffix of
 `pNxM` (either upper or lowercase) specifies exactly `N` bits of precision and
 `M` bits of exponent. The number of bits of precision is assumed to include
@@ -1590,7 +1590,7 @@ You can:
 * Compute the natural logarithm `logFloat` of a float.
 * Compute the sine `sinFloat` of a float.
 * Compute the cosine `cosFloat` of a float.
-* Compute the tangent `tanFlooat` of a float.
+* Compute the tangent `tanFloat` of a float.
 * Compute the arcsine `asinFloat` of a float.
 * Compute the arccosine `acosFloat` of a float.
 * Compute the arctangent `atanFloat` of a float.
@@ -1628,7 +1628,7 @@ You can:
 
 ### Floating-point comparisons
 
-Compute whether a float is less than or equasl to, less than, greater than or
+Compute whether a float is less than or equals to, less than, greater than or
 equal to, greater than, equal, or unequal to another float. Note that
 `X ==Float Y` and `X ==K Y` might yield different values. The latter should be
 used in cases where you want to compare whether two values of sort `Float`
