@@ -4,7 +4,7 @@
     rv-nix-tools.url = "github:runtimeverification/rv-nix-tools/854d4f05ea78547d46e807b414faad64cea10ae4";
     nixpkgs.follows = "rv-nix-tools/nixpkgs";
 
-    llvm-backend.url = "github:runtimeverification/llvm-backend/v0.1.140";
+    llvm-backend.url = "github:runtimeverification/llvm-backend/v0.1.141";
     llvm-backend.inputs.nixpkgs.follows = "nixpkgs";
 
     haskell-backend = {
